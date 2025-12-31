@@ -56,4 +56,8 @@ Actively developed.
 
 ## License
 
-TBD
+Phosphor is released under the MIT License.
+
+This project uses third-party libraries under their respective licenses.
+See THIRD_PARTY_NOTICES.md for details.
+
