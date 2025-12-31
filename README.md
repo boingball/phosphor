@@ -22,19 +22,19 @@ It focuses on *authentic CRT behaviour* rather than post-processing gimmicks.
 ## Screenshots
 
 ### ZX Spectrum – Loader Screen
-![ZX Spectrum Loader](Screenshots/main-zxspectrum.png)
+![ZX Spectrum Loader](/RetroDisplay/Screenshots/main-zxspectrum.png)
 
 ### Renegade – No Filters
-![Renegade No Filters](Screenshots/zxspectrum-renagade-nofilters.png)
+![Renegade No Filters](/RetroDisplay/Screenshots/zxspectrum-renagade-nofilters.png)
 
 ### Renegade – CRT Filters Enabled
-![Renegade Filters](Screenshots/zxspectrum-renagade-filters.png)
+![Renegade Filters](/RetroDisplay/Screenshots/zxspectrum-renagade-filters.png)
 
 ### Renegade – Title Screen (No Filters)
-![Renegade Title No Filters](Screenshots/zxspectrum-renagade-title-nofilters.png)
+![Renegade Title No Filters](/RetroDisplay/Screenshots/zxspectrum-renagade-title-nofilters.png)
 
 ### Renegade – Title Screen (CRT Filters)
-![Renegade Title Filters](Screenshots/zxspectrum-renagade-title-filters.png)
+![Renegade Title Filters](/RetroDisplay/Screenshots/zxspectrum-renagade-title-filters.png)
 
 ---
 
