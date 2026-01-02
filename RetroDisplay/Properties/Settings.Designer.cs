@@ -154,5 +154,29 @@ namespace RetroDisplay.Properties {
                 this["VideoMode"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string AudioSource {
+            get {
+                return ((string)(this["AudioSource"]));
+            }
+            set {
+                this["AudioSource"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0")]
+        public int AudioMode {
+            get {
+                return ((int)(this["AudioMode"]));
+            }
+            set {
+                this["AudioMode"] = value;
+            }
+        }
     }
 }

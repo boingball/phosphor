@@ -215,7 +215,9 @@
                     </Grid>
 
                     <TextBlock Text="VIDEO MODE" FontSize="8.5" Foreground="#888"/>
-                    <ComboBox x:Name="VideoModeCombo" IsEnabled="False" Margin="0,4,0,4"/>
+                    <ComboBox x:Name="VideoModeCombo"
+                              Style="{StaticResource RetroCombo}"
+                              IsEnabled="False" Margin="0,4,0,4"/>
 
                     <TextBlock Text="AUDIO SOURCE" FontSize="8.5" Foreground="#888"/>
                     <ComboBox x:Name="AudioSourceCombo"
@@ -272,7 +274,7 @@
                     <TextBlock Text="PHOSPHOR MASK" FontSize="8.5" Foreground="#888" />
                     <Slider Style="{StaticResource CrtSlider}"
                             x:Name="PhosphorSlider"
-                            Minimum="0" Maximum="0.3"
+                            Minimum="0" Maximum="1.0"
                             ValueChanged="PhosphorSlider_ValueChanged"/>
 
                     <TextBlock Text="SCANLINES" FontSize="8.5" Foreground="#888"/>
@@ -284,13 +286,13 @@
                     <TextBlock Text="HORIZONTAL SIZE" FontSize="8.5" Foreground="#888" />
                     <Slider Style="{StaticResource CrtSlider}"
                             x:Name="HorizontalSlider"
-                            Minimum="-0.25" Maximum="0.25"
+                            Minimum="-0.45" Maximum="0.45"
                             ValueChanged="HSizeSlider_ValueChanged"/>
 
                     <TextBlock Text="VERTICAL SIZE" FontSize="8.5" Foreground="#888" />
                     <Slider Style="{StaticResource CrtSlider}"
                             x:Name="VerticalSlider"
-                            Minimum="-0.15" Maximum="0.45"
+                            Minimum="-0.45" Maximum="0.45"
                             ValueChanged="VSizeSlider_ValueChanged"/>
 
                     <TextBlock Text="CRT VIGNETTE" FontSize="8.5" Foreground="#888" />

@@ -5,6 +5,7 @@ using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -24,21 +25,24 @@ namespace RetroDisplay
         private List<string> audioDevices = new List<string>();
         private bool isCapturing = false;
         private readonly RetroCrtEffect crtEffect = new();
-        private ScaleTransform scaleTransform;
-        private TranslateTransform translateTransform;
+
+        // To this (add = null! to suppress CS8618, since they are initialized in InitCrtGeometry called from the constructor):
+        private ScaleTransform scaleTransform = null!;
+        private TranslateTransform translateTransform = null!;
 
         // === AUDIO ===
         private WasapiCapture? audioCapture;
         private WasapiOut? audioOutput;
         private BufferedWaveProvider? audioBuffer;
         private VolumeSampleProvider? volumeSampleProvider;
-
         private MMDeviceEnumerator? audioEnumerator;
         private List<MMDevice> audioInputDevices = new();
         private List<MMDevice> audioOutputDevices = new();
-
-
-
+        // == VIDEO FRAME HANDLING ==
+        private WriteableBitmap? writeableBitmap;
+        private volatile int framePending = 0; // drop frames if UI is behind
+        private int frameCount = 0;
+        private DateTime fpsStart = DateTime.Now;
 
         public MainWindow()
         {
@@ -130,13 +134,6 @@ namespace RetroDisplay
                 AudioSourceCombo.Items.Add("-- Select Audio Source --");
 
                 DsDevice[] audioInputDevices = DsDevice.GetDevicesOfCat(DsFilterCategory.AudioInputDevice);
-
-                foreach (DsDevice device in audioInputDevices)
-                {
-                    audioDevices.Add(device.Name);
-                    AudioSourceCombo.Items.Add(device.Name);
-                }
-
                 AudioSourceCombo.SelectedIndex = 0;
 
                 StatusText.Text = $"Found {videoDevices.Count} video device(s)";
@@ -182,9 +179,28 @@ namespace RetroDisplay
                 AudioSourceCombo.Items.Add(dev.FriendlyName);
             }
 
-            AudioSourceCombo.SelectedIndex = 0;
+            //Restore saved audio device selection
+            bool restored = false;
 
-            // OPTIONAL: output selector later
+            if (!string.IsNullOrEmpty(Properties.Settings.Default.AudioSource))
+            {
+                for (int i = 0; i < AudioSourceCombo.Items.Count; i++)
+                {
+                    if (AudioSourceCombo.Items[i].ToString() ==
+                        Properties.Settings.Default.AudioSource)
+                    {
+                        AudioSourceCombo.SelectedIndex = i;
+                        restored = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!restored)
+            {
+                AudioSourceCombo.SelectedIndex = 0;
+            }
+
         }
 
         private void VideoSourceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -218,6 +234,18 @@ namespace RetroDisplay
 
         private void AudioSourceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            //Save selected audio device on change
+            if (AudioSourceCombo.SelectedIndex > 0)
+            {
+                Properties.Settings.Default.AudioSource =
+                    AudioSourceCombo.SelectedItem.ToString();
+
+                Properties.Settings.Default.AudioMode =
+                    AudioSourceCombo.SelectedIndex;
+
+                Properties.Settings.Default.Save();
+            }
+
             if (!isCapturing)
                 return;
 
@@ -272,8 +300,15 @@ namespace RetroDisplay
                 Properties.Settings.Default.VideoSource =
                 VideoSourceCombo.SelectedItem?.ToString();
 
+                //Save settings for Audio Device
+                Properties.Settings.Default.AudioSource =
+                    AudioSourceCombo.SelectedItem?.ToString();
+
                 Properties.Settings.Default.VideoMode =
                     VideoModeCombo.SelectedIndex;
+
+                Properties.Settings.Default.AudioMode =
+                    AudioSourceCombo.SelectedIndex;
 
                 Properties.Settings.Default.Save();
 
@@ -289,11 +324,6 @@ namespace RetroDisplay
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
-
-        private WriteableBitmap? writeableBitmap;
-        private volatile int framePending = 0; // drop frames if UI is behind
-        private int frameCount = 0;
-        private DateTime fpsStart = DateTime.Now;
 
         private void VideoDevice_NewFrame(object sender, AForge.Video.NewFrameEventArgs e)
     {
@@ -497,8 +527,6 @@ namespace RetroDisplay
             volumeSampleProvider = null;
         }
 
-
-
         private void StopButton_Click(object sender, RoutedEventArgs e)
         {
             StopCapture();
@@ -526,8 +554,6 @@ namespace RetroDisplay
                 volumeSampleProvider.Volume = (float)e.NewValue;
         }
 
-
-
         private void HSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             if (scaleTransform == null) return;
@@ -545,7 +571,6 @@ namespace RetroDisplay
             // Increase only if SCART box letterboxes
             scaleTransform.ScaleY = 1.0 + e.NewValue;
         }
-
 
         private void BrightnessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
@@ -626,19 +651,20 @@ namespace RetroDisplay
         }
 
         private void SaveSettings()
-{
-    Properties.Settings.Default.Brightness = BrightnessSlider.Value;
-    Properties.Settings.Default.Contrast   = ContrastSlider.Value;
-    Properties.Settings.Default.Saturation = SaturationSlider.Value;
-    Properties.Settings.Default.Gamma      = GammaSlider.Value;
-    Properties.Settings.Default.Phosphor   = PhosphorSlider.Value;
-    Properties.Settings.Default.Scanlines  = ScanlinesSlider.Value;
-    Properties.Settings.Default.Vignette   = VignetteSlider.Value;
-    Properties.Settings.Default.HSize = HorizontalSlider.Value;
-    Properties.Settings.Default.VSize = VerticalSlider.Value;
+                {
+                    Properties.Settings.Default.Brightness = BrightnessSlider.Value;
+                    Properties.Settings.Default.Contrast   = ContrastSlider.Value;
+                    Properties.Settings.Default.Saturation = SaturationSlider.Value;
+                    Properties.Settings.Default.Gamma      = GammaSlider.Value;
+                    Properties.Settings.Default.Phosphor   = PhosphorSlider.Value;
+                    Properties.Settings.Default.Scanlines  = ScanlinesSlider.Value;
+                    Properties.Settings.Default.Vignette   = VignetteSlider.Value;
+                    Properties.Settings.Default.HSize = HorizontalSlider.Value;
+                    Properties.Settings.Default.VSize = VerticalSlider.Value;
 
-    Properties.Settings.Default.Save();
-}
+
+                    Properties.Settings.Default.Save();
+                }
 
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
