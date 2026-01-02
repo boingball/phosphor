@@ -56,6 +56,52 @@ namespace RetroDisplay
             DependencyProperty.Register(nameof(PhosphorStrength), typeof(double), typeof(RetroCrtEffect),
                 new UIPropertyMetadata(0.0, PixelShaderConstantCallback(6)));
 
+        public double ScreenWidth
+        {
+            get => (double)GetValue(ScreenWidthProperty);
+            set => SetValue(ScreenWidthProperty, value);
+        }
+        public static readonly DependencyProperty ScreenWidthProperty =
+            DependencyProperty.Register(nameof(ScreenWidth), typeof(double), typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(7)));
+
+        public double ScreenHeight
+        {
+            get => (double)GetValue(ScreenHeightProperty);
+            set => SetValue(ScreenHeightProperty, value);
+        }
+        public static readonly DependencyProperty ScreenHeightProperty =
+            DependencyProperty.Register(nameof(ScreenHeight), typeof(double), typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(8)));
+
+        public double EffectiveWidth
+        {
+            get => (double)GetValue(EffectiveWidthProperty);
+            set => SetValue(EffectiveWidthProperty, value);
+        }
+
+        public static readonly DependencyProperty EffectiveWidthProperty =
+            DependencyProperty.Register(
+                nameof(EffectiveWidth),
+                typeof(double),
+                typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(9))
+            );
+
+        public double EffectiveHeight
+        {
+            get => (double)GetValue(EffectiveHeightProperty);
+            set => SetValue(EffectiveHeightProperty, value);
+        }
+
+        public static readonly DependencyProperty EffectiveHeightProperty =
+            DependencyProperty.Register(
+                nameof(EffectiveHeight),
+                typeof(double),
+                typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(10))
+            );
+
         public double Gamma
         {
             get => (double)GetValue(GammaProperty);

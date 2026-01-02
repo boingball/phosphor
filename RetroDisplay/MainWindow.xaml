@@ -292,7 +292,7 @@
                     <TextBlock Text="VERTICAL SIZE" FontSize="8.5" Foreground="#888" />
                     <Slider Style="{StaticResource CrtSlider}"
                             x:Name="VerticalSlider"
-                            Minimum="-0.45" Maximum="0.45"
+                            Minimum="-0.65" Maximum="0.65"
                             ValueChanged="VSizeSlider_ValueChanged"/>
 
                     <TextBlock Text="CRT VIGNETTE" FontSize="8.5" Foreground="#888" />

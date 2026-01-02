@@ -48,6 +48,9 @@ namespace RetroDisplay
         {
             InitializeComponent();
             VideoPlayer.Effect = crtEffect;
+            ScreenBorder.Loaded += (_, __) => UpdateCrtShaderSize();
+            this.SizeChanged += (_, __) => UpdateCrtShaderSize();
+            this.StateChanged += (_, __) => UpdateCrtShaderSize();
             LoadSettings();
             InitCrtGeometry();
             InitializeDevices();
@@ -86,6 +89,30 @@ namespace RetroDisplay
             // Geometry
             scaleTransform.ScaleX = 1.07 + HorizontalSlider.Value;
             scaleTransform.ScaleY = 1.0 + VerticalSlider.Value;
+        }
+
+        private void UpdateCrtShaderSize()
+        {
+            if (VideoPlayer == null || scaleTransform == null)
+                return;
+
+            // Actual displayed size (post-layout, pre-transform)
+            double baseWidth = VideoPlayer.ActualWidth;
+            double baseHeight = VideoPlayer.ActualHeight;
+
+            if (baseWidth <= 0 || baseHeight <= 0)
+                return;
+
+            // Geometry correction applied by WPF
+            double scaleX = scaleTransform.ScaleX;
+            double scaleY = scaleTransform.ScaleY;
+
+            // Feed shader
+            crtEffect.ScreenWidth = (float)baseWidth;
+            crtEffect.ScreenHeight = (float)baseHeight;
+
+            crtEffect.EffectiveWidth = (float)(baseWidth * scaleX);
+            crtEffect.EffectiveHeight = (float)(baseHeight * scaleY);
         }
 
 
@@ -561,6 +588,7 @@ namespace RetroDisplay
             // 1.07 = PAL pixel aspect baseline
             // Slider adds/subtracts from that
             scaleTransform.ScaleX = 1.07 + e.NewValue;
+            UpdateCrtShaderSize();
         }
 
         private void VSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -570,6 +598,7 @@ namespace RetroDisplay
             // 1.0 = authentic CRT baseline
             // Increase only if SCART box letterboxes
             scaleTransform.ScaleY = 1.0 + e.NewValue;
+            UpdateCrtShaderSize();
         }
 
         private void BrightnessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
