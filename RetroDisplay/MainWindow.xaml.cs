@@ -47,16 +47,29 @@ namespace RetroDisplay
         public MainWindow()
         {
             InitializeComponent();
+
+            crtEffect.BeamWidth = 0.18; // good CRT default
+            crtEffect.ScanlinePhase = 0.0;  // stable start
+            crtEffect.MaskType = 0.0;  // slot mask default
+            InitCrtGeometry();
             VideoPlayer.Effect = crtEffect;
-            ScreenBorder.Loaded += (_, __) => UpdateCrtShaderSize();
+            ScreenBorder.Loaded += (_, __) =>
+            {
+                UpdateCrtShaderSize();
+                ApplySettingsToPipeline();
+                crtEffect.Refresh();
+            };
             this.SizeChanged += (_, __) => UpdateCrtShaderSize();
             this.StateChanged += (_, __) => UpdateCrtShaderSize();
             LoadSettings();
-            InitCrtGeometry();
+            ApplySettingsToPipeline();
             InitializeDevices();
             InitializeAudioDevices(); // audio (NEW)
+
+
         }
 
+        //Load Settings from Properties.Settings
         private void LoadSettings()
         {
             BrightnessSlider.Value = Properties.Settings.Default.Brightness;
@@ -113,6 +126,7 @@ namespace RetroDisplay
 
             crtEffect.EffectiveWidth = (float)(baseWidth * scaleX);
             crtEffect.EffectiveHeight = (float)(baseHeight * scaleY);
+
         }
 
 
@@ -298,7 +312,16 @@ namespace RetroDisplay
                 StopCapture();
 
                 int deviceIndex = VideoSourceCombo.SelectedIndex - 1;
-                videoDevice = new VideoCaptureDevice(videoDevices[deviceIndex].MonikerString);
+                if (videoDevices == null)
+                {
+                    MessageBox.Show("Video devices not initialised.", "Error",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                var devices = videoDevices; // non-null local
+
+                videoDevice = new VideoCaptureDevice(devices[deviceIndex].MonikerString);
 
                 VideoCapabilities selectedCap;
 
@@ -452,6 +475,13 @@ namespace RetroDisplay
                 {
                     writeableBitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgr24, null);
                     VideoPlayer.Source = writeableBitmap;
+
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        UpdateCrtShaderSize();
+                        ApplySettingsToPipeline();
+                        crtEffect.Refresh();
+                    }), DispatcherPriority.Render);
                 }
 
                 writeableBitmap.WritePixels(

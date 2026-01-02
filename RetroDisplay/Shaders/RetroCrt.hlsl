@@ -10,6 +10,9 @@ float ScreenWidth : register(c7);
 float ScreenHeight : register(c8);
 float EffectiveWidth : register(c9);
 float EffectiveHeight : register(c10);
+float ScanlinePhase : register(c11); // 0.0 .. 1.0
+float MaskType : register(c12); // 0 = slot, 1 = aperture
+float BeamWidth : register(c13); // 0.0 .. 0.4
 
 float3 ApplySlotMask(float2 uv, float3 rgb)
 {
@@ -19,9 +22,20 @@ float3 ApplySlotMask(float2 uv, float3 rgb)
 
     // Slot mask (RGB vertical stripes)
     float3 mask;
-    mask.r = (stripe == 0) ? 1.0 : 0.6;
-    mask.g = (stripe == 1) ? 1.0 : 0.6;
-    mask.b = (stripe == 2) ? 1.0 : 0.6;
+    if (MaskType < 0.5)
+    {
+    // Slot mask (current)
+        mask.r = (stripe == 0) ? 1.0 : 0.6;
+        mask.g = (stripe == 1) ? 1.0 : 0.6;
+        mask.b = (stripe == 2) ? 1.0 : 0.6;
+    }
+    else
+    {
+    // Aperture mask (paired RGB)
+        mask = (fmod(x, 2.0) < 1.0)
+        ? float3(1.0, 0.85, 0.85)
+        : float3(0.85, 1.0, 0.85);
+    }
 
     return lerp(rgb, rgb * mask, PhosphorStrength);
 }
@@ -47,7 +61,7 @@ float4 main(float2 uv : TEXCOORD) : COLOR
     float3 right = tex2D(input, uv + texel).rgb;
 
     // Asymmetric beam spread
-    col.rgb = lerp(col.rgb, (left + col.rgb + right) / 3.0, 0.18);
+    col.rgb = lerp(col.rgb, (left + col.rgb + right) / 3.0, BeamWidth);
 
     // 6. Saturation (perceptual colour, after gamma)
     float grey = (col.r + col.g + col.b) * 0.3333;
@@ -56,7 +70,7 @@ float4 main(float2 uv : TEXCOORD) : COLOR
 
     // 7. Scanlines (energy modulation, display-space correct)
     float scan = 0.5 + 0.5 *
-    sin(uv.y * EffectiveHeight * 0.5 * 3.14159265);
+    sin((uv.y + ScanlinePhase) * EffectiveHeight * 0.5 * 3.14159265);
 
     float scanMod = lerp(1.0, scan * 1.15, ScanlineStrength);
     col.rgb *= scanMod;

@@ -102,6 +102,49 @@ namespace RetroDisplay
                 new UIPropertyMetadata(0.0, PixelShaderConstantCallback(10))
             );
 
+        public double ScanlinePhase
+        {
+            get => (double)GetValue(ScanlinePhaseProperty);
+            set => SetValue(ScanlinePhaseProperty, value);
+        }
+
+        public static readonly DependencyProperty ScanlinePhaseProperty =
+            DependencyProperty.Register(
+                nameof(ScanlinePhase),
+                typeof(double),
+                typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(11))
+            );
+
+        public double MaskType
+        {
+            get => (double)GetValue(MaskTypeProperty);
+            set => SetValue(MaskTypeProperty, value);
+        }
+
+        public static readonly DependencyProperty MaskTypeProperty =
+            DependencyProperty.Register(
+                nameof(MaskType),
+                typeof(double),
+                typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.0, PixelShaderConstantCallback(12))
+            );
+
+        public double BeamWidth
+        {
+            get => (double)GetValue(BeamWidthProperty);
+            set => SetValue(BeamWidthProperty, value);
+        }
+
+        public static readonly DependencyProperty BeamWidthProperty =
+            DependencyProperty.Register(
+                nameof(BeamWidth),
+                typeof(double),
+                typeof(RetroCrtEffect),
+                new UIPropertyMetadata(0.18, PixelShaderConstantCallback(13))
+            );
+
+
         public double Gamma
         {
             get => (double)GetValue(GammaProperty);
@@ -119,5 +162,23 @@ namespace RetroDisplay
         public double Saturation { get => (double)GetValue(SaturationProperty); set => SetValue(SaturationProperty, value); }
         public double ScanlineStrength { get => (double)GetValue(ScanlineStrengthProperty); set => SetValue(ScanlineStrengthProperty, value); }
         public double LineCount { get => (double)GetValue(LineCountProperty); set => SetValue(LineCountProperty, value); }
+        public void Refresh()
+        {
+            UpdateShaderValue(BrightnessProperty);
+            UpdateShaderValue(ContrastProperty);
+            UpdateShaderValue(SaturationProperty);
+            UpdateShaderValue(GammaProperty);
+            UpdateShaderValue(PhosphorStrengthProperty);
+            UpdateShaderValue(ScanlineStrengthProperty);
+            UpdateShaderValue(ScreenWidthProperty);
+            UpdateShaderValue(ScreenHeightProperty);
+            UpdateShaderValue(EffectiveWidthProperty);
+            UpdateShaderValue(EffectiveHeightProperty);
+            UpdateShaderValue(BeamWidthProperty);
+            UpdateShaderValue(MaskTypeProperty);
+            UpdateShaderValue(ScanlinePhaseProperty);
+        }
+
+
     }
 }
