@@ -19,8 +19,10 @@ namespace RetroDisplay
 
         private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            Exception ex = e.ExceptionObject as Exception;
-            MessageBox.Show($"An unexpected error occurred:\n\n{ex?.Message}\n\nThe application will now close.",
+            var ex = e.ExceptionObject as Exception;
+
+            MessageBox.Show(
+                $"An unexpected error occurred:\n\n{ex?.Message ?? "Unknown error"}\n\nThe application will now close.",
                 "Critical Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
