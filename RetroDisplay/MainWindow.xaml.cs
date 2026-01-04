@@ -36,12 +36,8 @@ namespace RetroDisplay
         private DispatcherTimer? _resizeDebounce;
         private int _pendingW, _pendingH;
         private readonly object _sync = new();
-        // == DX11 VIDEO PUMP ==
-        private DispatcherTimer? _videoPump;
         // Latest frame stored as BGRA32 for DX11 (DXGI_FORMAT_B8G8R8A8_UNorm)
         private byte[]? _dxFrameBgra;
-        private int _dxW, _dxH, _dxStride;
-        private volatile int _dxFrameReady = 0; // 1 = there is a new frame to push
 
         // To this (add = null! to suppress CS8618, since they are initialized in InitCrtGeometry called from the constructor):
         private ScaleTransform scaleTransform = null!;
@@ -535,8 +531,7 @@ namespace RetroDisplay
                     dst += 4;
                 }
 
-                // Signal the UI pump to push into DX11
-                Interlocked.Exchange(ref _dxFrameReady, 1);
+                _dx?.UpdateVideoFrameBgra32(bgra, width, height, bgraStride);
             }
             finally
             {
@@ -637,7 +632,6 @@ namespace RetroDisplay
                 videoDevice = null;
             }
 
-            _videoPump?.Stop();
             StopAudio();
             isCapturing = false;
             PlaceholderGrid.Visibility = Visibility.Visible;
@@ -765,32 +759,6 @@ namespace RetroDisplay
                 _resizeDebounce.Start();
             };
 
-            // Pump the latest captured frame into DX11 on the UI thread.
-            // (Avoid uploading from the capture thread.)
-            _videoPump = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-            _videoPump.Tick += (_, __) =>
-            {
-                if (_dx == null) return;
-                if (Interlocked.Exchange(ref _dxFrameReady, 0) == 0) return;
-
-                byte[]? frame;
-                int w, h, stride;
-
-                lock (_sync)
-                {
-                    frame = _dxFrameBgra;
-                    w = _dxW;
-                    h = _dxH;
-                    stride = _dxStride;
-                }
-
-                if (frame == null || w <= 0 || h <= 0 || stride <= 0)
-                    return;
-
-                // YOU will add this method on Dx11Renderer (see section 4 below)
-                _dx.UpdateVideoFrameBgra32(frame, w, h, stride);
-            };
-            _videoPump.Start();
         }
 
 
