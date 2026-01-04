@@ -11,9 +11,14 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Vortice.Direct3D11;
+using Vortice.DXGI;
+using Vortice.Mathematics;
+using Windows.UI;
 using DsFilterCategory = DirectShowLib.FilterCategory;
 
 namespace RetroDisplay
@@ -26,6 +31,17 @@ namespace RetroDisplay
         private List<string> audioDevices = new List<string>();
         private bool isCapturing = false;
         private readonly RetroCrtEffect crtEffect = new();
+        //DirextX11 Renderer
+        private Dx11Renderer? _dx;
+        private DispatcherTimer? _resizeDebounce;
+        private int _pendingW, _pendingH;
+        private readonly object _sync = new();
+        // == DX11 VIDEO PUMP ==
+        private DispatcherTimer? _videoPump;
+        // Latest frame stored as BGRA32 for DX11 (DXGI_FORMAT_B8G8R8A8_UNorm)
+        private byte[]? _dxFrameBgra;
+        private int _dxW, _dxH, _dxStride;
+        private volatile int _dxFrameReady = 0; // 1 = there is a new frame to push
 
         // To this (add = null! to suppress CS8618, since they are initialized in InitCrtGeometry called from the constructor):
         private ScaleTransform scaleTransform = null!;
@@ -51,12 +67,13 @@ namespace RetroDisplay
         public MainWindow()
         {
             InitializeComponent();
-
+            Loaded += MainWindow_Loaded;
+            Closing += (_, __) => _dx?.Dispose();
             crtEffect.BeamWidth = 0.18; // good CRT default
             crtEffect.ScanlinePhase = 0.0;  // stable start
             crtEffect.MaskType = 0.0;  // slot mask default
             InitCrtGeometry();
-            VideoPlayer.Effect = crtEffect;
+            //VideoPlayer.Effect = crtEffect;
             ScreenBorder.Loaded += (_, __) =>
             {
                 UpdateCrtShaderSize();
@@ -110,26 +127,26 @@ namespace RetroDisplay
 
         private void UpdateCrtShaderSize()
         {
-            if (VideoPlayer == null || scaleTransform == null)
-                return;
+           // if (VideoPlayer == null || scaleTransform == null)
+             //   return;
 
             // Actual displayed size (post-layout, pre-transform)
-            double baseWidth = VideoPlayer.ActualWidth;
-            double baseHeight = VideoPlayer.ActualHeight;
+           // double baseWidth = VideoPlayer.ActualWidth;
+          //  double baseHeight = VideoPlayer.ActualHeight;
 
-            if (baseWidth <= 0 || baseHeight <= 0)
+          //  if (baseWidth <= 0 || baseHeight <= 0)
                 return;
 
             // Geometry correction applied by WPF
-            double scaleX = scaleTransform.ScaleX;
-            double scaleY = scaleTransform.ScaleY;
+      //      double scaleX = scaleTransform.ScaleX;
+      //      double scaleY = scaleTransform.ScaleY;
 
             // Feed shader
-            crtEffect.ScreenWidth = (float)baseWidth;
-            crtEffect.ScreenHeight = (float)baseHeight;
+     //       crtEffect.ScreenWidth = (float)baseWidth;
+     //       crtEffect.ScreenHeight = (float)baseHeight;
 
-            crtEffect.EffectiveWidth = (float)(baseWidth * scaleX);
-            crtEffect.EffectiveHeight = (float)(baseHeight * scaleY);
+     //       crtEffect.EffectiveWidth = (float)(baseWidth * scaleX);
+     //       crtEffect.EffectiveHeight = (float)(baseHeight * scaleY);
 
         }
 
@@ -144,8 +161,8 @@ namespace RetroDisplay
             transformGroup.Children.Add(scaleTransform);
             transformGroup.Children.Add(translateTransform);
 
-            VideoPlayer.RenderTransformOrigin = new Point(0.5, 0.5);
-            VideoPlayer.RenderTransform = transformGroup;
+   //         VideoPlayer.RenderTransformOrigin = new Point(0.5, 0.5);
+    //        VideoPlayer.RenderTransform = transformGroup;
         }
 
         private void InitializeDevices()
@@ -369,7 +386,7 @@ namespace RetroDisplay
                 isCapturing = true;
                 PlaceholderGrid.Visibility = Visibility.Collapsed;
                 StatusText.Text = "Capturing...";
-                StatusText.Foreground = new SolidColorBrush(Colors.LimeGreen);
+                StatusText.Foreground = new SolidColorBrush(System.Windows.Media.Colors.LimeGreen);
             }
             catch (Exception ex)
             {
@@ -483,42 +500,50 @@ namespace RetroDisplay
             return;
         }
 
-        // Now only WPF work on UI thread
-        Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() =>
-        {
             try
             {
-                if (writeableBitmap == null ||
-                    writeableBitmap.PixelWidth != width ||
-                    writeableBitmap.PixelHeight != height)
-                {
-                    writeableBitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgr24, null);
-                    VideoPlayer.Source = writeableBitmap;
+                // pixels = your BGR24 buffer, stride = width*3
+                int bgraStride = width * 4;
+                int bgraSize = bgraStride * height;
 
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        UpdateCrtShaderSize();
-                        ApplySettingsToPipeline();
-                        crtEffect.Refresh();
-                    }), DispatcherPriority.Render);
+                byte[] bgra;
+                lock (_sync)
+                {
+                    if (_dxFrameBgra == null || _dxFrameBgra.Length != bgraSize)
+                        _dxFrameBgra = new byte[bgraSize];
+
+                    bgra = _dxFrameBgra;
+                    _dxW = width;
+                    _dxH = height;
+                    _dxStride = bgraStride;
                 }
 
-                writeableBitmap.Lock();
-                writeableBitmap.WritePixels(
-                    new Int32Rect(0, 0, width, height),
-                    pixels,
-                    width * 3,
-                    0
-                );
-                writeableBitmap.Unlock();
+                // Expand BGR24 -> BGRA32 (B,G,R,255)
+                // pixels length = width*3*height
+                int src = 0;
+                int dst = 0;
+                int total = width * height;
+
+                for (int i = 0; i < total; i++)
+                {
+                    bgra[dst + 0] = pixels[src + 0]; // B
+                    bgra[dst + 1] = pixels[src + 1]; // G
+                    bgra[dst + 2] = pixels[src + 2]; // R
+                    bgra[dst + 3] = 255;             // A
+
+                    src += 3;
+                    dst += 4;
+                }
+
+                // Signal the UI pump to push into DX11
+                Interlocked.Exchange(ref _dxFrameReady, 1);
             }
             finally
             {
-
                 Interlocked.Exchange(ref framePending, 0);
             }
-        }));
-    }
+
+        }
 
         private void StartAudio()
         {
@@ -611,11 +636,13 @@ namespace RetroDisplay
                 videoDevice.NewFrame -= VideoDevice_NewFrame;
                 videoDevice = null;
             }
+
+            _videoPump?.Stop();
             StopAudio();
             isCapturing = false;
             PlaceholderGrid.Visibility = Visibility.Visible;
             StatusText.Text = "Stopped";
-            StatusText.Foreground = new SolidColorBrush(Color.FromRgb(136, 136, 136));
+            StatusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(136, 136, 136));
         }
 
         private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -709,6 +736,71 @@ namespace RetroDisplay
             Properties.Settings.Default.Reset();
             StatusText.Text = "CRT defaults restored";
         }
+
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            // Panel is created by now, so it has a real HWND
+            _dx = new Dx11Renderer();
+
+            int w = Math.Max(1, DxPanel.ClientSize.Width);
+            int h = Math.Max(1, DxPanel.ClientSize.Height);
+
+            _dx.Initialize(DxPanel.Handle, w, h);
+            _dx.Start();
+
+            // Debounced resize so DXGI doesn’t get hammered during live-resize
+            _resizeDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
+            _resizeDebounce.Tick += (_, __) =>
+            {
+                _resizeDebounce!.Stop();
+                _dx?.Resize(_pendingW, _pendingH);
+            };
+
+            DxPanel.Resize += (_, __) =>
+            {
+                _pendingW = Math.Max(1, DxPanel.ClientSize.Width);
+                _pendingH = Math.Max(1, DxPanel.ClientSize.Height);
+                _resizeDebounce!.Stop();
+                _resizeDebounce.Start();
+            };
+
+            // Pump the latest captured frame into DX11 on the UI thread.
+            // (Avoid uploading from the capture thread.)
+            _videoPump = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _videoPump.Tick += (_, __) =>
+            {
+                if (_dx == null) return;
+                if (Interlocked.Exchange(ref _dxFrameReady, 0) == 0) return;
+
+                byte[]? frame;
+                int w, h, stride;
+
+                lock (_sync)
+                {
+                    frame = _dxFrameBgra;
+                    w = _dxW;
+                    h = _dxH;
+                    stride = _dxStride;
+                }
+
+                if (frame == null || w <= 0 || h <= 0 || stride <= 0)
+                    return;
+
+                // YOU will add this method on Dx11Renderer (see section 4 below)
+                _dx.UpdateVideoFrameBgra32(frame, w, h, stride);
+            };
+            _videoPump.Start();
+        }
+
+
+        private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            _dx?.Resize(
+                (int)VideoContainer.ActualWidth,
+                (int)VideoContainer.ActualHeight);
+        }
+
 
         private void ResetGeometry()
         {

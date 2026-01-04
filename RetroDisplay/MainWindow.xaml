@@ -1,6 +1,8 @@
 ﻿<Window x:Class="RetroDisplay.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wf="clr-namespace:System.Windows.Forms;assembly=System.Windows.Forms"
+        xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
         Title="Phosphor - Classic Monitor Viewer"
         Width="1200"
         Height="760"
@@ -8,6 +10,7 @@
         MinHeight="680"
         Background="#1a1a1a"
         WindowStyle="SingleBorderWindow"
+        SizeChanged="Window_SizeChanged"
         ResizeMode="CanResize">
 
     <!-- ================= RESOURCES ================= -->
@@ -113,11 +116,9 @@
 
                                 <Grid x:Name="VideoContainer">
 
-                                    <Image x:Name="VideoPlayer"
-                                           Stretch="Uniform"
-                                           RenderOptions.BitmapScalingMode="NearestNeighbor"
-                                           SnapsToDevicePixels="True"
-                                           UseLayoutRounding="True"/>
+                                    <wfi:WindowsFormsHost x:Name="DxHost">
+                                        <wf:Panel x:Name="DxPanel" BackColor="Black"/>
+                                    </wfi:WindowsFormsHost>
 
                                     <!-- Placeholder -->
                                     <Grid x:Name="PlaceholderGrid" Visibility="Visible">
