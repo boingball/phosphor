@@ -6,6 +6,7 @@ using NAudio.Wave.SampleProviders;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -43,6 +44,9 @@ namespace RetroDisplay
         private volatile int framePending = 0; // drop frames if UI is behind
         private int frameCount = 0;
         private DateTime fpsStart = DateTime.Now;
+        private byte[]? frameBuffer;
+        private int frameBufferStride;
+        private int frameBufferHeight;
 
         public MainWindow()
         {
@@ -400,8 +404,8 @@ namespace RetroDisplay
 
         try
         {
-            using var src = (System.Drawing.Bitmap)e.Frame.Clone();
-
+            //using var src = (System.Drawing.Bitmap)e.Frame.Clone();
+            var src = e.Frame;
             width = src.Width;
             height = src.Height;
 
@@ -409,6 +413,11 @@ namespace RetroDisplay
             using var frame24 = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
             using (var g = System.Drawing.Graphics.FromImage(frame24))
             {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.CompositingQuality = CompositingQuality.HighSpeed;
+                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+                    g.SmoothingMode = SmoothingMode.None;
                     g.DrawImage(src, 0, 0, width, height);
             }
 
@@ -419,34 +428,44 @@ namespace RetroDisplay
 
             try
             {
-                int srcStride = data.Stride;
-                int dstStride = width * 3;
+                    int srcStride = data.Stride;
+                    int dstStride = width * 3;
+                    int absSrcStride = Math.Abs(srcStride);
+                    int requiredSize = dstStride * height;
 
-                pixels = new byte[dstStride * height];
-
-                // Handle negative stride (bottom-up bitmap)
-                if (srcStride > 0)
-                {
-                    for (int y = 0; y < height; y++)
+                    // Ensure reusable buffer
+                    if (frameBuffer == null || frameBuffer.Length != requiredSize)
                     {
-                        IntPtr srcRow = IntPtr.Add(data.Scan0, y * srcStride);
-                        Buffer.BlockCopy(MarshalRow(srcRow, dstStride), 0, pixels, y * dstStride, dstStride);
+                        frameBuffer = new byte[requiredSize];
                     }
-                }
-                else
-                {
-                    // Start from last row, walk upward
-                    int absStride = -srcStride;
-                    IntPtr basePtr = IntPtr.Add(data.Scan0, (height - 1) * absStride);
 
-                    for (int y = 0; y < height; y++)
+                    pixels = frameBuffer;
+
+                    // Fast path: matching stride, top-down
+                    if (srcStride == dstStride)
                     {
-                        IntPtr srcRow = IntPtr.Add(basePtr, -y * absStride);
-                        Buffer.BlockCopy(MarshalRow(srcRow, dstStride), 0, pixels, y * dstStride, dstStride);
+                        Marshal.Copy(data.Scan0, pixels, 0, requiredSize);
                     }
+                    else
+                    {
+                        // Handle stride mismatch + bottom-up safely
+                        IntPtr srcBase = data.Scan0;
+
+                        if (srcStride < 0)
+                        {
+                            // Bottom-up bitmap: start at last row
+                            srcBase = IntPtr.Add(srcBase, absSrcStride * (height - 1));
+                        }
+
+                        for (int y = 0; y < height; y++)
+                        {
+                            IntPtr srcRow = IntPtr.Add(srcBase, y * (srcStride > 0 ? absSrcStride : -absSrcStride));
+                            Marshal.Copy(srcRow, pixels, y * dstStride, dstStride);
+                        }
+                    }
+
                 }
-            }
-            finally
+                finally
             {
                     frame24.UnlockBits(data);
             }
@@ -484,12 +503,14 @@ namespace RetroDisplay
                     }), DispatcherPriority.Render);
                 }
 
+                writeableBitmap.Lock();
                 writeableBitmap.WritePixels(
                     new Int32Rect(0, 0, width, height),
                     pixels,
                     width * 3,
                     0
                 );
+                writeableBitmap.Unlock();
             }
             finally
             {
@@ -497,14 +518,6 @@ namespace RetroDisplay
                 Interlocked.Exchange(ref framePending, 0);
             }
         }));
-    }
-
-        // Helper: copies one row from unmanaged memory into a managed byte[]
-        private static byte[] MarshalRow(IntPtr src, int count)
-    {
-        var row = new byte[count];
-        Marshal.Copy(src, row, 0, count);
-        return row;
     }
 
         private void StartAudio()
