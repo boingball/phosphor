@@ -19,6 +19,7 @@
     <PackageReference Include="AForge.Video.DirectShow" Version="2.2.5" />
     <PackageReference Include="MediaFoundation.NetCore" Version="2024.5.10" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.6.2" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
 	<PackageReference Include="Vortice.DXGI" Version="3.6.2" />
     <PackageReference Include="WPFMediaKit" Version="3.0.1" />

@@ -6,11 +6,8 @@
         Title="Phosphor - Classic Monitor Viewer"
         Width="1200"
         Height="760"
-        MinWidth="1080"
-        MinHeight="680"
         Background="#1a1a1a"
         WindowStyle="SingleBorderWindow"
-        SizeChanged="Window_SizeChanged"
         ResizeMode="CanResize">
 
     <!-- ================= RESOURCES ================= -->
@@ -91,7 +88,7 @@
     <!-- ================= LAYOUT ================= -->
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="1*"/>
             <ColumnDefinition Width="320"/>
         </Grid.ColumnDefinitions>
 
@@ -116,8 +113,12 @@
 
                                 <Grid x:Name="VideoContainer">
 
-                                    <wfi:WindowsFormsHost x:Name="DxHost">
-                                        <wf:Panel x:Name="DxPanel" BackColor="Black"/>
+                                    <wfi:WindowsFormsHost x:Name="DxHost"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Stretch">
+                                      <wf:Panel x:Name="DxPanel"
+                                      Dock="Fill"
+                                      BackColor="Black"/>
                                     </wfi:WindowsFormsHost>
 
                                     <!-- Placeholder -->

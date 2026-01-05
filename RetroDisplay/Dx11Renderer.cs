@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Threading;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
+using Vortice.D3DCompiler;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using static Vortice.Direct3D11.D3D11;
@@ -24,8 +25,19 @@ namespace RetroDisplay
         private ID3D11Texture2D? _stagingTex;   // STAGING (CPU write)
         private int _videoW, _videoH;
 
+        // Quad rendering
+        private ID3D11VertexShader? _vs;
+        private ID3D11PixelShader? _ps;
+        private ID3D11InputLayout? _inputLayout;
+        private ID3D11Buffer? _vertexBuffer;
+        private ID3D11SamplerState? _sampler;
+        private ID3D11ShaderResourceView? _videoSrv;
+
+
+
         // Backbuffer size
         private int _bbW, _bbH;
+
 
         // Latest frame data (written by capture thread, consumed by render thread)
         private byte[]? _pendingFrame;
@@ -92,6 +104,8 @@ namespace RetroDisplay
                 _bbH = (int)scDesc.Height;
 
                 CreateOrUpdateRtv();
+                CreateShaders();
+                CreateQuad();
             }
         }
 
@@ -114,6 +128,99 @@ namespace RetroDisplay
             _renderThread?.Join();
             _renderThread = null;
         }
+
+        private void CreateShaders()
+        {
+            const string vsSrc = @"
+struct VS_IN {
+    float2 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VS_OUT {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VS_OUT main(VS_IN input)
+{
+    VS_OUT o;
+    o.pos = float4(input.pos, 0, 1);
+    o.uv  = input.uv;
+    return o;
+}";
+
+            const string psSrc = @"
+Texture2D tex0 : register(t0);
+SamplerState samp0 : register(s0);
+
+float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
+{
+    return tex0.Sample(samp0, uv);
+}";
+
+            ReadOnlyMemory<byte> vsMem = Compiler.Compile(
+                vsSrc,
+                "main",
+                "FullscreenQuadVS",
+                "vs_4_0",
+                ShaderFlags.None);
+
+            ReadOnlyMemory<byte> psMem = Compiler.Compile(
+                psSrc,
+                "main",
+                "FullscreenQuadPS",
+                "ps_4_0",
+                ShaderFlags.None);
+
+            byte[] vsBytes = vsMem.ToArray();
+            byte[] psBytes = psMem.ToArray();
+
+            _vs = _device!.CreateVertexShader(vsBytes);
+            _ps = _device.CreatePixelShader(psBytes);
+
+            _inputLayout = _device.CreateInputLayout(
+                new[]
+                {
+            new InputElementDescription("POSITION", 0, Format.R32G32_Float, 0, 0),
+            new InputElementDescription("TEXCOORD", 0, Format.R32G32_Float, 8, 0),
+                },
+                vsBytes);
+        }
+
+
+        private unsafe void CreateQuad()
+        {
+            float[] vertices =
+            {
+        // x, y,   u, v
+        -1f, -1f,  0f, 1f,
+        -1f,  1f,  0f, 0f,
+         1f, -1f,  1f, 1f,
+         1f,  1f,  1f, 0f,
+    };
+
+            var desc = new BufferDescription(
+                (uint)(sizeof(float) * vertices.Length),
+                BindFlags.VertexBuffer,
+                ResourceUsage.Immutable);
+
+            fixed (float* p = vertices)
+            {
+                var init = new SubresourceData((IntPtr)p);
+                _vertexBuffer = _device!.CreateBuffer(desc, init);
+            }
+
+            _sampler = _device!.CreateSamplerState(new SamplerDescription
+            {
+                Filter = Filter.MinMagMipLinear,
+                AddressU = TextureAddressMode.Clamp,
+                AddressV = TextureAddressMode.Clamp,
+                AddressW = TextureAddressMode.Clamp
+            });
+        }
+
+
 
         /// <summary>
         /// Called from capture thread(s). No D3D calls here.
@@ -230,6 +337,15 @@ namespace RetroDisplay
             // Render
             ctx.OMSetRenderTargets(rtv);
 
+            //Resize viewport
+            ctx.RSSetViewport(new Viewport(
+                                        0,
+                                        0,
+                                        _bbW,
+                                        _bbH,
+                                        0.0f,
+                                        1.0f));
+
             // Green fallback if no video yet
             if (!_hasVideo || _videoTex == null)
             {
@@ -239,24 +355,35 @@ namespace RetroDisplay
             }
 
             // Copy video to backbuffer (no scaling here; we’ll add quad/shader later)
-            using var backBuffer = sc.GetBuffer<ID3D11Texture2D>(0);
+            ctx.OMSetRenderTargets(rtv);
+            ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
 
-            // Avoid invalid argument if video larger than backbuffer
-            var bbDesc = backBuffer.Description;
-            int copyW = Math.Min(_videoW, (int)bbDesc.Width);
-            int copyH = Math.Min(_videoH, (int)bbDesc.Height);
+            ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
 
-            if (copyW <= 0 || copyH <= 0)
+            if (!_hasVideo || _videoSrv == null || _vs == null || _ps == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
             {
-                ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
                 sc.Present(1, PresentFlags.None);
                 return;
             }
 
-            var srcBox = new Box(0, 0, 0, copyW, copyH, 1);
-            ctx.CopySubresourceRegion(backBuffer, 0, 0, 0, 0, _videoTex, 0, srcBox);
+            // Pipeline
+            ctx.IASetInputLayout(_inputLayout);
+            ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
+            ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
+
+            ctx.VSSetShader(_vs);
+            ctx.PSSetShader(_ps);
+            ctx.PSSetSampler(0, _sampler);
+            ctx.PSSetShaderResource(0, _videoSrv);
+
+            // Draw fullscreen quad
+            ctx.Draw(4, 0);
+
+            // Unbind SRV (avoids warnings if you ever render into same texture later)
+            ctx.PSSetShaderResource(0, null);
 
             sc.Present(1, PresentFlags.None);
+
 
             _lastPresentTicks = Stopwatch.GetTimestamp();
         }
@@ -292,10 +419,13 @@ namespace RetroDisplay
                     Format = Format.B8G8R8A8_UNorm,
                     SampleDescription = new SampleDescription(1, 0),
                     Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.None,
+                    BindFlags = BindFlags.ShaderResource,      // <-- IMPORTANT
                     CPUAccessFlags = CpuAccessFlags.None,
                     MiscFlags = ResourceOptionFlags.None
                 });
+
+                _videoSrv?.Dispose();
+                _videoSrv = dev.CreateShaderResourceView(_videoTex); // <-- IMPORTANT
 
                 _stagingTex = dev.CreateTexture2D(new Texture2DDescription
                 {

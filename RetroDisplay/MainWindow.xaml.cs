@@ -6,7 +6,9 @@ using NAudio.Wave.SampleProviders;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -82,6 +84,15 @@ namespace RetroDisplay
             };
             this.SizeChanged += (_, __) => UpdateCrtShaderSize();
             this.StateChanged += (_, __) => UpdateCrtShaderSize();
+
+            VideoContainer.SizeChanged += (_, __) =>
+            {
+                _pendingW = Math.Max(1, DxPanel.ClientSize.Width);
+                _pendingH = Math.Max(1, DxPanel.ClientSize.Height);
+                _resizeDebounce?.Stop();
+                _resizeDebounce?.Start();
+            };
+
             LoadSettings();
             ApplySettingsToPipeline();
             InitializeDevices();
@@ -398,9 +409,9 @@ namespace RetroDisplay
         }
 
         private void VideoDevice_NewFrame(object sender, AForge.Video.NewFrameEventArgs e)
-    {
+        {
+            // --- FPS counter (keep your existing behaviour) ---
             int frames = Interlocked.Increment(ref frameCount);
-
             var elapsed = DateTime.Now - fpsStart;
             if (elapsed.TotalSeconds >= 1)
             {
@@ -414,137 +425,111 @@ namespace RetroDisplay
                 });
             }
 
-            // If UI hasn't consumed the last frame yet, drop this one.
-           //f (Interlocked.Exchange(ref framePending, 1) == 1)
-         // return;
+            // --- Drop frames if we haven't consumed the previous one (prevents latency buildup) ---
+            // If a frame is already pending for upload, drop this one immediately.
+            if (Interlocked.CompareExchange(ref _dxFrameReady, 1, 1) == 1)
+                return;
 
-        int width, height;
-        byte[] pixels;
-
-        try
-        {
-            //using var src = (System.Drawing.Bitmap)e.Frame.Clone();
-            var src = e.Frame;
-            width = src.Width;
-            height = src.Height;
-
-            // Convert to 24bpp safely
-            using var frame24 = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-            using (var g = System.Drawing.Graphics.FromImage(frame24))
-            {
-                    g.CompositingMode = CompositingMode.SourceCopy;
-                    g.CompositingQuality = CompositingQuality.HighSpeed;
-                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
-                    g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
-                    g.SmoothingMode = SmoothingMode.None;
-                    g.DrawImage(src, 0, 0, width, height);
-            }
-
-            var rect = new System.Drawing.Rectangle(0, 0, width, height);
-            var data = frame24.LockBits(rect,
-                System.Drawing.Imaging.ImageLockMode.ReadOnly,
-                System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            // Optional: also protect against re-entrancy on the capture thread
+            if (Interlocked.Exchange(ref framePending, 1) == 1)
+                return;
 
             try
             {
+                var bmp = e.Frame;
+                int width = bmp.Width;
+                int height = bmp.Height;
+
+                if (width <= 0 || height <= 0)
+                    return;
+
+                // We want BGR24 directly from the incoming bitmap.
+                // If the camera feeds something else, AForge often still gives 24bpp,
+                // but if it doesn't, LockBits will throw and we’ll surface it.
+                var rect = new System.Drawing.Rectangle(0, 0, width, height);
+
+                BitmapData? data = null;
+                try
+                {
+                    data = bmp.LockBits(rect, ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+
                     int srcStride = data.Stride;
-                    int dstStride = width * 3;
                     int absSrcStride = Math.Abs(srcStride);
-                    int requiredSize = dstStride * height;
+                    int srcBytesPerRow = width * 3;
 
-                    // Ensure reusable buffer
-                    if (frameBuffer == null || frameBuffer.Length != requiredSize)
+                    // Ensure we have a BGRA buffer big enough (tightly packed)
+                    int dstStride = width * 4;
+                    int dstSize = dstStride * height;
+
+                    byte[] bgra;
+                    lock (_sync)
                     {
-                        frameBuffer = new byte[requiredSize];
+                        if (_dxFrameBgra == null || _dxFrameBgra.Length != dstSize)
+                            _dxFrameBgra = new byte[dstSize];
+
+                        bgra = _dxFrameBgra;
+                        _dxW = width;
+                        _dxH = height;
+                        _dxStride = dstStride;
                     }
 
-                    pixels = frameBuffer;
-
-                    // Fast path: matching stride, top-down
-                    if (srcStride == dstStride)
+                    unsafe
                     {
-                        Marshal.Copy(data.Scan0, pixels, 0, requiredSize);
-                    }
-                    else
-                    {
-                        // Handle stride mismatch + bottom-up safely
-                        IntPtr srcBase = data.Scan0;
+                        byte* srcBase = (byte*)data.Scan0;
 
+                        // Handle bottom-up bitmaps (negative stride) safely
                         if (srcStride < 0)
-                        {
-                            // Bottom-up bitmap: start at last row
-                            srcBase = IntPtr.Add(srcBase, absSrcStride * (height - 1));
-                        }
+                            srcBase += absSrcStride * (height - 1);
 
-                        for (int y = 0; y < height; y++)
+                        fixed (byte* dstBaseFixed = bgra)
                         {
-                            IntPtr srcRow = IntPtr.Add(srcBase, y * (srcStride > 0 ? absSrcStride : -absSrcStride));
-                            Marshal.Copy(srcRow, pixels, y * dstStride, dstStride);
+                            byte* dstBase = dstBaseFixed;
+
+                            // Convert row-by-row: BGR -> BGRA (A=255)
+                            for (int y = 0; y < height; y++)
+                            {
+                                byte* srcRow = srcBase + (y * (srcStride > 0 ? absSrcStride : -absSrcStride));
+                                byte* dstRow = dstBase + (y * dstStride);
+
+                                byte* s = srcRow;
+                                byte* d = dstRow;
+
+                                // Tight loop
+                                for (int x = 0; x < width; x++)
+                                {
+                                    d[0] = s[0];     // B
+                                    d[1] = s[1];     // G
+                                    d[2] = s[2];     // R
+                                    d[3] = 255;      // A
+                                    s += 3;
+                                    d += 4;
+                                }
+                            }
                         }
                     }
 
+                    // Signal that a new frame is ready for the DX upload thread
+                    Interlocked.Exchange(ref _dxFrameReady, 1);
                 }
                 finally
-            {
-                    frame24.UnlockBits(data);
+                {
+                    if (data != null)
+                        bmp.UnlockBits(data);
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            // Release framePending so it doesn't deadlock capture
-            Interlocked.Exchange(ref framePending, 0);
-
-            Dispatcher.BeginInvoke(() =>
+            catch (Exception ex)
             {
-                StatusText.Text = $"Frame error: {ex.GetType().Name} - {ex.Message}";
-            });
-
-            return;
-        }
-
-            try
-            {
-                // pixels = your BGR24 buffer, stride = width*3
-                int bgraStride = width * 4;
-                int bgraSize = bgraStride * height;
-
-                byte[]? bgra = null;
-                lock (_sync)
+                Dispatcher.BeginInvoke(() =>
                 {
-                    if (_dxFrameBgra == null || _dxFrameBgra.Length != bgraSize)
-                        _dxFrameBgra = new byte[bgraSize];
-
-                    bgra = _dxFrameBgra;   // ← now it's guaranteed non-null
-                    _dxW = width;
-                    _dxH = height;
-                    _dxStride = width * 4; // BGRA32
-                }
-
-                // Expand BGR24 -> BGRA32 (B,G,R,255)
-                // pixels length = width*3*height
-                int src = 0;
-                int dst = 0;
-                int total = width * height;
-
-                for (int i = 0; i < total; i++)
-                {
-                    bgra[dst + 0] = pixels[src + 0]; // B
-                    bgra[dst + 1] = pixels[src + 1]; // G
-                    bgra[dst + 2] = pixels[src + 2]; // R
-                    bgra[dst + 3] = 255;             // A
-
-                    src += 3;
-                    dst += 4;
-                }
-
-                Interlocked.Exchange(ref _dxFrameReady, 1);
+                    StatusText.Text = $"Frame error: {ex.GetType().Name} - {ex.Message}";
+                });
             }
             finally
             {
                 Interlocked.Exchange(ref framePending, 0);
             }
-
         }
+
 
         private void StartAudio()
         {
@@ -757,13 +742,6 @@ namespace RetroDisplay
                 _dx?.Resize(_pendingW, _pendingH);
             };
 
-            DxPanel.Resize += (_, __) =>
-            {
-                _pendingW = Math.Max(1, DxPanel.ClientSize.Width);
-                _pendingH = Math.Max(1, DxPanel.ClientSize.Height);
-                _resizeDebounce!.Stop();
-                _resizeDebounce.Start();
-            };
 
             // Pump the latest captured frame into DX11 on the UI thread.
             _videoThread = new Thread(() =>
@@ -804,14 +782,6 @@ namespace RetroDisplay
             };
 
             _videoThread.Start();
-        }
-
-
-        private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            _dx?.Resize(
-                (int)VideoContainer.ActualWidth,
-                (int)VideoContainer.ActualHeight);
         }
 
 
