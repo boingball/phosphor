@@ -134,6 +134,20 @@ namespace RetroDisplay
             // Geometry
             scaleTransform.ScaleX = 1.07 + HorizontalSlider.Value;
             scaleTransform.ScaleY = 1.0 + VerticalSlider.Value;
+
+            PushCrtParamsToDx();
+
+            _dx?.SetCrtParams(
+                (float)BrightnessSlider.Value,
+                (float)ContrastSlider.Value,
+                (float)SaturationSlider.Value,
+                (float)GammaSlider.Value,
+                (float)ScanlinesSlider.Value,
+                (float)PhosphorSlider.Value,
+                (float)crtEffect.ScanlinePhase,
+                (float)crtEffect.MaskType,
+                (float)crtEffect.BeamWidth
+            );
         }
 
         private void UpdateCrtShaderSize()
@@ -659,31 +673,37 @@ namespace RetroDisplay
         private void BrightnessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.Brightness = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void ContrastSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.Contrast = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void SaturationSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.Saturation = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void ScanlinesSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.ScanlineStrength = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void GammaSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.Gamma = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void PhosphorSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             crtEffect.PhosphorStrength = e.NewValue;
+            PushCrtParamsToDx();
         }
 
         private void VignetteSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -691,6 +711,7 @@ namespace RetroDisplay
             if (VignetteOverlay != null)
             {
                 VignetteOverlay.Opacity = VignetteSlider.Value;
+                PushCrtParamsToDx();
             }
         }
 
@@ -734,12 +755,25 @@ namespace RetroDisplay
             _dx.Initialize(DxPanel.Handle, w, h);
             _dx.Start();
 
+            _dx.SetCrtParams(
+            (float)BrightnessSlider.Value,
+            (float)ContrastSlider.Value,
+            (float)SaturationSlider.Value,
+            (float)GammaSlider.Value,
+            (float)ScanlinesSlider.Value,
+            (float)PhosphorSlider.Value,
+            0.0f,   // scanline phase (start)
+            0.0f,   // mask type
+            0.18f   // beam width
+        );
+
             // Debounced resize so DXGI doesn’t get hammered during live-resize
             _resizeDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
             _resizeDebounce.Tick += (_, __) =>
             {
                 _resizeDebounce!.Stop();
                 _dx?.Resize(_pendingW, _pendingH);
+                PushCrtParamsToDx();
             };
 
 
@@ -782,6 +816,25 @@ namespace RetroDisplay
             };
 
             _videoThread.Start();
+        }
+
+        //Push CRT parameters to DirectX renderer
+        private void PushCrtParamsToDx()
+        {
+            if (_dx == null)
+                return;
+
+            _dx.SetCrtParams(
+                (float)BrightnessSlider.Value,
+                (float)ContrastSlider.Value,
+                (float)SaturationSlider.Value,
+                (float)GammaSlider.Value,
+                (float)ScanlinesSlider.Value,
+                (float)PhosphorSlider.Value,
+                (float)crtEffect.ScanlinePhase,
+                (float)crtEffect.MaskType,
+                (float)crtEffect.BeamWidth
+            );
         }
 
 

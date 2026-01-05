@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.IO;
 using System.Threading;
+using Vortice.D3DCompiler;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
-using Vortice.D3DCompiler;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using static Vortice.Direct3D11.D3D11;
@@ -32,6 +34,44 @@ namespace RetroDisplay
         private ID3D11Buffer? _vertexBuffer;
         private ID3D11SamplerState? _sampler;
         private ID3D11ShaderResourceView? _videoSrv;
+
+        //CRT Shader
+        private ID3D11PixelShader? _psCopy;
+        private ID3D11PixelShader? _psCrt;
+        private ID3D11Buffer? _crtCBuffer;
+        private CrtParams _crt;
+
+        // Viewport tracking (used by CRT shader)
+        private int _viewportWidth;
+        private int _viewportHeight;
+
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CrtParams
+        {
+            public float Brightness;
+            public float Contrast;
+            public float Saturation;
+            public float ScanlineStrength;
+
+            public float Gamma;
+            public float PhosphorStrength;
+            public float ScreenWidth;
+            public float ScreenHeight;
+
+            public float EffectiveWidth;
+            public float EffectiveHeight;
+            public float ScanlinePhase;
+            public float MaskType;
+
+            public float BeamWidth;
+
+            // pad to 16-float / 64-byte boundary
+            public float Pad0;
+            public float Pad1;
+            public float Pad2;
+        }
+
 
 
 
@@ -102,10 +142,18 @@ namespace RetroDisplay
                 _swapChain = factory.CreateSwapChainForHwnd(_device, hwnd, scDesc);
                 _bbW = (int)scDesc.Width;
                 _bbH = (int)scDesc.Height;
+                uint cbSize = (uint)Marshal.SizeOf<CrtParams>(); // now 64 bytes
 
                 CreateOrUpdateRtv();
                 CreateShaders();
                 CreateQuad();
+
+                _crtCBuffer?.Dispose();
+                _crtCBuffer = _device!.CreateBuffer(new BufferDescription(
+                    (uint)System.Runtime.InteropServices.Marshal.SizeOf<CrtParams>(),
+                    BindFlags.ConstantBuffer,
+                    ResourceUsage.Dynamic,
+                    CpuAccessFlags.Write));
             }
         }
 
@@ -132,16 +180,8 @@ namespace RetroDisplay
         private void CreateShaders()
         {
             const string vsSrc = @"
-struct VS_IN {
-    float2 pos : POSITION;
-    float2 uv  : TEXCOORD0;
-};
-
-struct VS_OUT {
-    float4 pos : SV_POSITION;
-    float2 uv  : TEXCOORD0;
-};
-
+struct VS_IN { float2 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_OUT main(VS_IN input)
 {
     VS_OUT o;
@@ -150,42 +190,62 @@ VS_OUT main(VS_IN input)
     return o;
 }";
 
-            const string psSrc = @"
+            const string psCopySrc = @"
 Texture2D tex0 : register(t0);
 SamplerState samp0 : register(s0);
-
 float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 {
     return tex0.Sample(samp0, uv);
 }";
 
-            ReadOnlyMemory<byte> vsMem = Compiler.Compile(
-                vsSrc,
-                "main",
-                "FullscreenQuadVS",
-                "vs_4_0",
-                ShaderFlags.None);
+            // Load CRT HLSL from file
+            // Make sure the file is copied to output (see step 2 below)
+            string crtPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "RetroCrt.hlsl");
+            string psCrtSrc = File.ReadAllText(crtPath);
 
-            ReadOnlyMemory<byte> psMem = Compiler.Compile(
-                psSrc,
-                "main",
-                "FullscreenQuadPS",
-                "ps_4_0",
-                ShaderFlags.None);
+            ReadOnlyMemory<byte> vsMem = Compiler.Compile(vsSrc, "main", "FullscreenQuadVS", "vs_4_0", ShaderFlags.None);
+            ReadOnlyMemory<byte> psCopyMem = Compiler.Compile(psCopySrc, "main", "CopyPS", "ps_4_0", ShaderFlags.None);
+            ReadOnlyMemory<byte> psCrtMem = Compiler.Compile(psCrtSrc, "main", "CrtPS", "ps_4_0", ShaderFlags.None);
 
             byte[] vsBytes = vsMem.ToArray();
-            byte[] psBytes = psMem.ToArray();
+            byte[] psCopyBytes = psCopyMem.ToArray();
+            byte[] psCrtBytes = psCrtMem.ToArray();
 
             _vs = _device!.CreateVertexShader(vsBytes);
-            _ps = _device.CreatePixelShader(psBytes);
 
+            _psCopy?.Dispose();
+            _psCrt?.Dispose();
+            _psCopy = _device.CreatePixelShader(psCopyBytes);
+            _psCrt = _device.CreatePixelShader(psCrtBytes);
+
+            _inputLayout?.Dispose();
             _inputLayout = _device.CreateInputLayout(
                 new[]
                 {
-            new InputElementDescription("POSITION", 0, Format.R32G32_Float, 0, 0),
-            new InputElementDescription("TEXCOORD", 0, Format.R32G32_Float, 8, 0),
+            new InputElementDescription("POSITION", 0, Vortice.DXGI.Format.R32G32_Float, 0, 0),
+            new InputElementDescription("TEXCOORD", 0, Vortice.DXGI.Format.R32G32_Float, 8, 0),
                 },
-                vsBytes);
+                vsBytes
+            );
+
+            CreateCrtConstantBuffer();
+        }
+
+
+        private void CreateCrtConstantBuffer()
+        {
+            _crtCBuffer?.Dispose();
+
+            uint size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<CrtParams>();
+
+            _crtCBuffer = _device!.CreateBuffer(
+                new BufferDescription(
+                    size,
+                    BindFlags.ConstantBuffer,
+                    ResourceUsage.Dynamic,
+                    CpuAccessFlags.Write
+                )
+            );
         }
 
 
@@ -252,6 +312,9 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                 width = Math.Max(1, width);
                 height = Math.Max(1, height);
 
+                _viewportWidth = width;
+                _viewportHeight = height;
+
                 if (width == _bbW && height == _bbH) return;
 
                 _rtv?.Dispose();
@@ -260,6 +323,8 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                 _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
                 _bbW = width;
                 _bbH = height;
+                _viewportWidth = width;
+                _viewportHeight = height;
 
                 CreateOrUpdateRtv();
             }
@@ -360,7 +425,7 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 
             ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
 
-            if (!_hasVideo || _videoSrv == null || _vs == null || _ps == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
+            if (!_hasVideo || _videoSrv == null || _vs == null || _psCrt == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
             {
                 sc.Present(1, PresentFlags.None);
                 return;
@@ -372,9 +437,34 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
 
             ctx.VSSetShader(_vs);
-            ctx.PSSetShader(_ps);
+            ctx.PSSetShader(_psCrt);
             ctx.PSSetSampler(0, _sampler);
             ctx.PSSetShaderResource(0, _videoSrv);
+
+            //CRT Pixel Shader setup
+            // Fill size terms from current backbuffer
+            _crt.ScreenWidth = _bbW;
+            _crt.ScreenHeight = _bbH;
+
+            // For now, geometry not ported: Effective = Screen
+            _crt.EffectiveWidth = _bbW;
+            _crt.EffectiveHeight = _bbH;
+
+            if (_crtCBuffer != null)
+            {
+                var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                try
+                {
+                    System.Runtime.InteropServices.Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                }
+                finally
+                {
+                    ctx.Unmap(_crtCBuffer, 0);
+                }
+
+                ctx.PSSetConstantBuffer(0, _crtCBuffer);
+            }
+
 
             // Draw fullscreen quad
             ctx.Draw(4, 0);
@@ -485,6 +575,32 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             _rtv?.Dispose();
             _rtv = _device.CreateRenderTargetView(backBuffer);
         }
+
+        public void SetCrtParams(
+            float brightness,
+            float contrast,
+            float saturation,
+            float gamma,
+            float scanlines,
+            float phosphor,
+            float scanlinePhase,
+            float maskType,
+            float beamWidth)
+        {
+            // Don’t touch the D3D context here (wrong thread risk).
+            // Just update the struct; render thread will upload it.
+            _crt.Brightness = brightness;
+            _crt.Contrast = contrast;
+            _crt.Saturation = saturation;
+            _crt.Gamma = gamma;
+            _crt.ScanlineStrength = scanlines;
+            _crt.PhosphorStrength = phosphor;
+            _crt.ScanlinePhase = scanlinePhase;
+            _crt.MaskType = maskType;
+            _crt.BeamWidth = beamWidth;
+        }
+
+
 
         public void Dispose()
         {
