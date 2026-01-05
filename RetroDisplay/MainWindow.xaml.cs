@@ -38,6 +38,9 @@ namespace RetroDisplay
         private readonly object _sync = new();
         // Latest frame stored as BGRA32 for DX11 (DXGI_FORMAT_B8G8R8A8_UNorm)
         private byte[]? _dxFrameBgra;
+        private int _dxW, _dxH, _dxStride;
+        private volatile int _dxFrameReady = 0; // 1 = there is a new frame to push
+        private DispatcherTimer? _videoPump;
 
         // To this (add = null! to suppress CS8618, since they are initialized in InitCrtGeometry called from the constructor):
         private ScaleTransform scaleTransform = null!;
@@ -308,6 +311,7 @@ namespace RetroDisplay
                 return;
 
             // Stop current audio (if any)
+            _videoPump?.Stop();
             StopAudio();
 
             // Start new audio if a valid device is selected
@@ -528,7 +532,7 @@ namespace RetroDisplay
                     dst += 4;
                 }
 
-                _dx?.UpdateVideoFrameBgra32(bgra, width, height, bgraStride);
+                Interlocked.Exchange(ref _dxFrameReady, 1);
             }
             finally
             {
@@ -755,6 +759,31 @@ namespace RetroDisplay
                 _resizeDebounce!.Stop();
                 _resizeDebounce.Start();
             };
+
+            // Pump the latest captured frame into DX11 on the UI thread.
+            _videoPump = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _videoPump.Tick += (_, __) =>
+            {
+                if (_dx == null) return;
+                if (Interlocked.Exchange(ref _dxFrameReady, 0) == 0) return;
+
+                byte[]? frame;
+                int wFrame, hFrame, stride;
+
+                lock (_sync)
+                {
+                    frame = _dxFrameBgra;
+                    wFrame = _dxW;
+                    hFrame = _dxH;
+                    stride = _dxStride;
+                }
+
+                if (frame == null || wFrame <= 0 || hFrame <= 0 || stride <= 0)
+                    return;
+
+                _dx.UpdateVideoFrameBgra32(frame, wFrame, hFrame, stride);
+            };
+            _videoPump.Start();
 
         }
 
