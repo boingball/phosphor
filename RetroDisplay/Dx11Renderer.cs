@@ -65,13 +65,10 @@ namespace RetroDisplay
             public float MaskType;
 
             public float BeamWidth;
-
-            // pad to 16-float / 64-byte boundary
+            public float HSize;     // NEW
+            public float VSize;     // NEW
             public float Pad0;
-            public float Pad1;
-            public float Pad2;
         }
-
 
 
 
@@ -431,6 +428,24 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                 return;
             }
 
+            // --- ALWAYS upload CRT params (real-time sliders depend on this) ---
+            if (_crtCBuffer != null)
+            {
+                _crt.ScreenWidth = _bbW;
+                _crt.ScreenHeight = _bbH;
+                _crt.EffectiveWidth = _bbW;
+                _crt.EffectiveHeight = _bbH;
+
+                var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                try
+                {
+                    Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                }
+                finally
+                {
+                    ctx.Unmap(_crtCBuffer, 0);
+                }
+            }
             // Pipeline
             ctx.IASetInputLayout(_inputLayout);
             ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
@@ -440,7 +455,7 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             ctx.PSSetShader(_psCrt);
             ctx.PSSetSampler(0, _sampler);
             ctx.PSSetShaderResource(0, _videoSrv);
-
+            ctx.PSSetConstantBuffer(0, _crtCBuffer);
             //CRT Pixel Shader setup
             // Fill size terms from current backbuffer
             _crt.ScreenWidth = _bbW;
@@ -585,7 +600,9 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             float phosphor,
             float scanlinePhase,
             float maskType,
-            float beamWidth)
+            float beamWidth,
+            float hSize,
+            float vSize)
         {
             // Don’t touch the D3D context here (wrong thread risk).
             // Just update the struct; render thread will upload it.
@@ -598,6 +615,8 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             _crt.ScanlinePhase = scanlinePhase;
             _crt.MaskType = maskType;
             _crt.BeamWidth = beamWidth;
+            _crt.HSize = hSize;
+            _crt.VSize = vSize;
         }
 
 

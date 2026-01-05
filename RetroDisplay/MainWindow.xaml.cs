@@ -135,7 +135,7 @@ namespace RetroDisplay
             scaleTransform.ScaleX = 1.07 + HorizontalSlider.Value;
             scaleTransform.ScaleY = 1.0 + VerticalSlider.Value;
 
-            PushCrtParamsToDx();
+
 
             _dx?.SetCrtParams(
                 (float)BrightnessSlider.Value,
@@ -146,8 +146,12 @@ namespace RetroDisplay
                 (float)PhosphorSlider.Value,
                 (float)crtEffect.ScanlinePhase,
                 (float)crtEffect.MaskType,
-                (float)crtEffect.BeamWidth
+                (float)crtEffect.BeamWidth,
+                (float)HorizontalSlider.Value,   // H-Size
+                (float)VerticalSlider.Value      // V-Size
             );
+
+            PushCrtParamsToDx();
         }
 
         private void UpdateCrtShaderSize()
@@ -658,6 +662,7 @@ namespace RetroDisplay
             // Slider adds/subtracts from that
             scaleTransform.ScaleX = 1.07 + e.NewValue;
             UpdateCrtShaderSize();
+            PushCrtParamsToDx();
         }
 
         private void VSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -668,6 +673,7 @@ namespace RetroDisplay
             // Increase only if SCART box letterboxes
             scaleTransform.ScaleY = 1.0 + e.NewValue;
             UpdateCrtShaderSize();
+            PushCrtParamsToDx();
         }
 
         private void BrightnessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -762,6 +768,8 @@ namespace RetroDisplay
             (float)GammaSlider.Value,
             (float)ScanlinesSlider.Value,
             (float)PhosphorSlider.Value,
+            (float)HorizontalSlider.Value,   // H-Size
+            (float)VerticalSlider.Value,     // V-Size
             0.0f,   // scanline phase (start)
             0.0f,   // mask type
             0.18f   // beam width
@@ -833,7 +841,9 @@ namespace RetroDisplay
                 (float)PhosphorSlider.Value,
                 (float)crtEffect.ScanlinePhase,
                 (float)crtEffect.MaskType,
-                (float)crtEffect.BeamWidth
+                (float)crtEffect.BeamWidth,
+                (float)HorizontalSlider.Value,   // H-Size
+                (float)VerticalSlider.Value      // V-Size
             );
         }
 

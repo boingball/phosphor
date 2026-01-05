@@ -20,9 +20,9 @@ cbuffer CrtParams : register(b0)
 
     float BeamWidth;
 
+    float HSize; // NEW
+    float VSize; // NEW
     float _pad0;
-    float _pad1;
-    float _pad2;
 };
 
 float3 ApplySlotMask(float2 uv, float3 rgb)
@@ -52,6 +52,26 @@ float3 ApplySlotMask(float2 uv, float3 rgb)
 
 float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 {
+    
+    // Center UVs
+    float2 centered = uv - 0.5;
+
+// PAL-correct baseline (matches your old 1.07 logic)
+    float hScale = 1.07 + HSize;
+    float vScale = 1.0 + VSize;
+
+// Apply deflection gain
+    centered.x /= hScale;
+    centered.y /= vScale;
+
+// Back to UV space
+    uv = centered + 0.5;
+
+// Kill outside area (CRT overscan)
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1)
+        return float4(0, 0, 0, 1);
+    
+    
     // 1) Sample
     float4 col = tex0.Sample(samp0, uv);
     float safeGamma = max(Gamma, 0.01);
