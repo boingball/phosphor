@@ -41,6 +41,16 @@ namespace RetroDisplay
         private ID3D11Buffer? _crtCBuffer;
         private CrtParams _crt;
 
+        // Offscreen CRT surface (integer scaled)
+        private ID3D11Texture2D? _crtTex;
+        private ID3D11RenderTargetView? _crtRtv;
+        private ID3D11ShaderResourceView? _crtSrv;
+        private int _crtW, _crtH;
+
+        // Two samplers: point for integer scale, linear optional (not required)
+        private ID3D11SamplerState? _samplerPoint;
+        private ID3D11SamplerState? _samplerLinear;
+
         // Viewport tracking (used by CRT shader)
         private int _viewportWidth;
         private int _viewportHeight;
@@ -275,7 +285,18 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                 _vertexBuffer = _device!.CreateBuffer(desc, init);
             }
 
-            _sampler = _device!.CreateSamplerState(new SamplerDescription
+            _samplerPoint?.Dispose();
+            _samplerLinear?.Dispose();
+
+            _samplerPoint = _device!.CreateSamplerState(new SamplerDescription
+            {
+                Filter = Filter.MinMagMipPoint,
+                AddressU = TextureAddressMode.Clamp,
+                AddressV = TextureAddressMode.Clamp,
+                AddressW = TextureAddressMode.Clamp
+            });
+
+            _samplerLinear = _device!.CreateSamplerState(new SamplerDescription
             {
                 Filter = Filter.MinMagMipLinear,
                 AddressU = TextureAddressMode.Clamp,
@@ -284,6 +305,49 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             });
         }
 
+
+        private void EnsureCrtSurface(int videoW, int videoH)
+        {
+            if (_device == null) return;
+
+            // If we don't yet know video size, bail.
+            if (videoW <= 0 || videoH <= 0) return;
+
+            // Integer scale that fits in the backbuffer
+            int sx = Math.Max(1, _bbW / videoW);
+            int sy = Math.Max(1, _bbH / videoH);
+            int scale = Math.Max(1, Math.Min(sx, sy));
+
+            int desiredW = Math.Max(1, videoW * scale);
+            int desiredH = Math.Max(1, videoH * scale);
+
+            if (_crtTex != null && desiredW == _crtW && desiredH == _crtH)
+                return;
+
+            _crtSrv?.Dispose();
+            _crtRtv?.Dispose();
+            _crtTex?.Dispose();
+
+            _crtW = desiredW;
+            _crtH = desiredH;
+
+            _crtTex = _device.CreateTexture2D(new Texture2DDescription
+            {
+                Width = (uint)_crtW,
+                Height = (uint)_crtH,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.B8G8R8A8_UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                CPUAccessFlags = CpuAccessFlags.None,
+                MiscFlags = ResourceOptionFlags.None
+            });
+
+            _crtRtv = _device.CreateRenderTargetView(_crtTex);
+            _crtSrv = _device.CreateShaderResourceView(_crtTex);
+        }
 
 
         /// <summary>
@@ -355,12 +419,12 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             IDXGISwapChain1? sc;
             ID3D11RenderTargetView? rtv;
 
+            // Grab core objects under the D3D lock
             lock (_d3dLock)
             {
                 ctx = _context;
                 sc = _swapChain;
                 rtv = _rtv;
-
 
                 if (ctx == null || sc == null || rtv == null)
                 {
@@ -368,37 +432,34 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                     return;
                 }
 
-                // Handle pending resize ON THE RENDER THREAD ONLY
+                // ---- Handle pending resize (RENDER THREAD ONLY) ----
                 if (Interlocked.Exchange(ref _resizePending, 0) == 1)
                 {
-                    lock (_d3dLock)
+                    int w = Math.Max(1, _resizeW);
+                    int h = Math.Max(1, _resizeH);
+
+                    if (w != _bbW || h != _bbH)
                     {
-                        if (_swapChain != null && _context != null)
-                        {
-                            int w = Math.Max(1, _resizeW);
-                            int h = Math.Max(1, _resizeH);
+                        // Release RTV before ResizeBuffers
+                        _rtv?.Dispose();
+                        _rtv = null;
 
-                            if (w != _bbW || h != _bbH)
-                            {
-                                // release old RTV before ResizeBuffers
-                                _rtv?.Dispose();
-                                _rtv = null;
+                        // Unbind RTs before resizing
+                        ctx.OMSetRenderTargets((ID3D11RenderTargetView?)null);
 
-                                // IMPORTANT: unbind render targets before resizing
-                                _context.OMSetRenderTargets((ID3D11RenderTargetView?)null);
+                        sc.ResizeBuffers(0, (uint)w, (uint)h, Format.Unknown, SwapChainFlags.None);
 
-                                _swapChain.ResizeBuffers(0, (uint)w, (uint)h, Format.Unknown, SwapChainFlags.None);
+                        _bbW = w;
+                        _bbH = h;
 
-                                _bbW = w;
-                                _bbH = h;
+                        CreateOrUpdateRtv();
+                        rtv = _rtv;
 
-                                CreateOrUpdateRtv();
-                            }
-                        }
+                        // NOTE: CRT surface will be recreated lazily below once we know video size
                     }
                 }
 
-                // Pull latest frame (if any) and upload ON THE RENDER THREAD (safe)
+                // ---- Pull latest frame and upload ON RENDER THREAD ----
                 if (Interlocked.Exchange(ref _frameReady, 0) == 1)
                 {
                     byte[]? frame;
@@ -418,103 +479,117 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                     }
                 }
 
-                // Render
-                ctx.OMSetRenderTargets(rtv);
-
-                //Resize viewport
-                ctx.RSSetViewport(new Viewport(
-                                            0,
-                                            0,
-                                            _bbW,
-                                            _bbH,
-                                            0.0f,
-                                            1.0f));
-
-                // Green fallback if no video yet
-                if (!_hasVideo || _videoTex == null)
+                // Re-acquire RTV in case it changed
+                rtv = _rtv;
+                if (rtv == null)
                 {
+                    Thread.Sleep(1);
+                    return;
+                }
+
+                // ---- Fallback when no video yet ----
+                if (!_hasVideo || _videoSrv == null)
+                {
+                    ctx.OMSetRenderTargets(rtv);
+                    ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
                     ctx.ClearRenderTargetView(rtv, new Color4(0.0f, 0.35f, 0.0f, 1.0f));
                     sc.Present(1, PresentFlags.None);
                     return;
                 }
 
-                // Copy video to backbuffer (no scaling here; we’ll add quad/shader later)
-                ctx.OMSetRenderTargets(rtv);
-                ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
-
-                ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
-
-                if (!_hasVideo || _videoSrv == null || _vs == null || _psCrt == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
+                // ---- Validate pipeline resources ----
+                if (_vs == null || _psCopy == null || _psCrt == null ||
+                    _vertexBuffer == null || _inputLayout == null ||
+                    _samplerPoint == null || _samplerLinear == null ||
+                    _crtCBuffer == null)
                 {
+                    ctx.OMSetRenderTargets(rtv);
+                    ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
+                    ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
                     sc.Present(1, PresentFlags.None);
                     return;
                 }
 
-                // --- ALWAYS upload CRT params (real-time sliders depend on this) ---
-                if (_crtCBuffer != null)
+                // ---- Ensure integer-scaled CRT surface exists ----
+                EnsureCrtSurface(_videoW, _videoH);
+                if (_crtRtv == null || _crtSrv == null || _crtW <= 0 || _crtH <= 0)
                 {
-                    _crt.ScreenWidth = _bbW;
-                    _crt.ScreenHeight = _bbH;
-                    _crt.EffectiveWidth = _bbW;
-                    _crt.EffectiveHeight = _bbH;
-
-                    var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-                    try
-                    {
-                        Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
-                    }
-                    finally
-                    {
-                        ctx.Unmap(_crtCBuffer, 0);
-                    }
+                    ctx.OMSetRenderTargets(rtv);
+                    ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
+                    ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
+                    sc.Present(1, PresentFlags.None);
+                    return;
                 }
-                // Pipeline
+
+                // =========================================================
+                // PASS 1: Video -> CRT Surface (INTEGER SCALE, POINT SAMPLE)
+                // =========================================================
+                ctx.OMSetRenderTargets(_crtRtv);
+                ctx.RSSetViewport(new Viewport(0, 0, _crtW, _crtH, 0.0f, 1.0f));
+                ctx.ClearRenderTargetView(_crtRtv, new Color4(0, 0, 0, 1));
+
+                ctx.IASetInputLayout(_inputLayout);
+                ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
+                ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
+
+                ctx.VSSetShader(_vs);
+                ctx.PSSetShader(_psCopy);
+                ctx.PSSetSampler(0, _samplerPoint);
+                ctx.PSSetShaderResource(0, _videoSrv);
+
+                ctx.Draw(4, 0);
+
+                // Unbind SRV
+                ctx.PSSetShaderResource(0, null);
+
+                // =========================================================
+                // Upload CRT constants USING CRT SURFACE SIZE (stable pixels)
+                // =========================================================
+                _crt.ScreenWidth = _crtW;
+                _crt.ScreenHeight = _crtH;
+                _crt.EffectiveWidth = _crtW;
+                _crt.EffectiveHeight = _crtH;
+
+                var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                try
+                {
+                    Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                }
+                finally
+                {
+                    ctx.Unmap(_crtCBuffer, 0);
+                }
+
+                // =========================================================
+                // PASS 2: CRT Surface -> Backbuffer (CRT shader)
+                // =========================================================
+                ctx.OMSetRenderTargets(rtv);
+                ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
+                ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
+
                 ctx.IASetInputLayout(_inputLayout);
                 ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
                 ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
 
                 ctx.VSSetShader(_vs);
                 ctx.PSSetShader(_psCrt);
-                ctx.PSSetSampler(0, _sampler);
-                ctx.PSSetShaderResource(0, _videoSrv);
+
+                // Sampling from CRT surface -> window: linear is fine here
+                ctx.PSSetSampler(0, _samplerLinear);
+                ctx.PSSetShaderResource(0, _crtSrv);
                 ctx.PSSetConstantBuffer(0, _crtCBuffer);
-                //CRT Pixel Shader setup
-                // Fill size terms from current backbuffer
-                _crt.ScreenWidth = _bbW;
-                _crt.ScreenHeight = _bbH;
 
-                // For now, geometry not ported: Effective = Screen
-                _crt.EffectiveWidth = _bbW;
-                _crt.EffectiveHeight = _bbH;
-
-                if (_crtCBuffer != null)
-                {
-                    var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-                    try
-                    {
-                        System.Runtime.InteropServices.Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
-                    }
-                    finally
-                    {
-                        ctx.Unmap(_crtCBuffer, 0);
-                    }
-
-                    ctx.PSSetConstantBuffer(0, _crtCBuffer);
-                }
-
-
-                // Draw fullscreen quad
                 ctx.Draw(4, 0);
 
-                // Unbind SRV (avoids warnings if you ever render into same texture later)
+                // Unbind SRV
                 ctx.PSSetShaderResource(0, null);
 
                 sc.Present(1, PresentFlags.None);
 
-
                 _lastPresentTicks = Stopwatch.GetTimestamp();
             }
         }
+
 
         private void UploadFrameOnRenderThread(byte[] bgra, int width, int height, int stride)
         {
@@ -681,6 +756,21 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 
                 try { _device?.Dispose(); } catch { }
                 _device = null;
+
+                try { _crtSrv?.Dispose(); } catch { }
+                _crtSrv = null;
+
+                try { _crtRtv?.Dispose(); } catch { }
+                _crtRtv = null;
+
+                try { _crtTex?.Dispose(); } catch { }
+                _crtTex = null;
+
+                try { _samplerPoint?.Dispose(); } catch { }
+                _samplerPoint = null;
+
+                try { _samplerLinear?.Dispose(); } catch { }
+                _samplerLinear = null;
             }
         }
 
