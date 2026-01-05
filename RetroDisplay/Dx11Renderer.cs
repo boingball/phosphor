@@ -49,6 +49,9 @@ namespace RetroDisplay
         private volatile int _resizePending;  // 0/1
         private int _resizeW, _resizeH;
 
+        //Dispose Checking
+        private volatile bool _shutdownRequested;
+
 
         [StructLayout(LayoutKind.Sequential)]
         private struct CrtParams
@@ -643,19 +646,13 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 
         public void Dispose()
         {
-            Stop();
+            // Signal render thread to shut down
+            _shutdownRequested = true;
 
-            lock (_d3dLock)
-            {
-                _stagingTex?.Dispose(); _stagingTex = null;
-                _videoTex?.Dispose(); _videoTex = null;
+            Stop(); // this joins the render thread
 
-                _rtv?.Dispose(); _rtv = null;
-                _swapChain?.Dispose(); _swapChain = null;
-
-                _context?.Dispose(); _context = null;
-                _device?.Dispose(); _device = null;
-            }
+            // Nothing else here.
+            // The render thread will clean up safely.
         }
     }
 }
