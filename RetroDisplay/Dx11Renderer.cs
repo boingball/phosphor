@@ -45,6 +45,10 @@ namespace RetroDisplay
         private int _viewportWidth;
         private int _viewportHeight;
 
+        //Resize tracking
+        private volatile int _resizePending;  // 0/1
+        private int _resizeW, _resizeH;
+
 
         [StructLayout(LayoutKind.Sequential)]
         private struct CrtParams
@@ -302,30 +306,15 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 
         public void Resize(int width, int height)
         {
-            lock (_d3dLock)
-            {
-                if (_swapChain == null || _context == null) return;
+            width = Math.Max(1, width);
+            height = Math.Max(1, height);
 
-                width = Math.Max(1, width);
-                height = Math.Max(1, height);
-
-                _viewportWidth = width;
-                _viewportHeight = height;
-
-                if (width == _bbW && height == _bbH) return;
-
-                _rtv?.Dispose();
-                _rtv = null;
-
-                _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
-                _bbW = width;
-                _bbH = height;
-                _viewportWidth = width;
-                _viewportHeight = height;
-
-                CreateOrUpdateRtv();
-            }
+            // just store the request; render thread will do the DXGI work
+            _resizeW = width;
+            _resizeH = height;
+            Interlocked.Exchange(ref _resizePending, 1);
         }
+
 
         public void ResetVideo()
         {
@@ -368,129 +357,160 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
                 ctx = _context;
                 sc = _swapChain;
                 rtv = _rtv;
-            }
 
-            if (ctx == null || sc == null || rtv == null)
-            {
-                Thread.Sleep(5);
-                return;
-            }
 
-            // Pull latest frame (if any) and upload ON THE RENDER THREAD (safe)
-            if (Interlocked.Exchange(ref _frameReady, 0) == 1)
-            {
-                byte[]? frame;
-                int w, h, stride;
-
-                lock (_frameLock)
+                if (ctx == null || sc == null || rtv == null)
                 {
-                    frame = _pendingFrame;
-                    w = _pendingW;
-                    h = _pendingH;
-                    stride = _pendingStride;
+                    Thread.Sleep(5);
+                    return;
                 }
 
-                if (frame != null && w > 0 && h > 0 && stride > 0)
+                // Handle pending resize ON THE RENDER THREAD ONLY
+                if (Interlocked.Exchange(ref _resizePending, 0) == 1)
                 {
-                    UploadFrameOnRenderThread(frame, w, h, stride);
+                    lock (_d3dLock)
+                    {
+                        if (_swapChain != null && _context != null)
+                        {
+                            int w = Math.Max(1, _resizeW);
+                            int h = Math.Max(1, _resizeH);
+
+                            if (w != _bbW || h != _bbH)
+                            {
+                                // release old RTV before ResizeBuffers
+                                _rtv?.Dispose();
+                                _rtv = null;
+
+                                // IMPORTANT: unbind render targets before resizing
+                                _context.OMSetRenderTargets((ID3D11RenderTargetView?)null);
+
+                                _swapChain.ResizeBuffers(0, (uint)w, (uint)h, Format.Unknown, SwapChainFlags.None);
+
+                                _bbW = w;
+                                _bbH = h;
+
+                                CreateOrUpdateRtv();
+                            }
+                        }
+                    }
                 }
-            }
 
-            // Render
-            ctx.OMSetRenderTargets(rtv);
+                // Pull latest frame (if any) and upload ON THE RENDER THREAD (safe)
+                if (Interlocked.Exchange(ref _frameReady, 0) == 1)
+                {
+                    byte[]? frame;
+                    int w, h, stride;
 
-            //Resize viewport
-            ctx.RSSetViewport(new Viewport(
-                                        0,
-                                        0,
-                                        _bbW,
-                                        _bbH,
-                                        0.0f,
-                                        1.0f));
+                    lock (_frameLock)
+                    {
+                        frame = _pendingFrame;
+                        w = _pendingW;
+                        h = _pendingH;
+                        stride = _pendingStride;
+                    }
 
-            // Green fallback if no video yet
-            if (!_hasVideo || _videoTex == null)
-            {
-                ctx.ClearRenderTargetView(rtv, new Color4(0.0f, 0.35f, 0.0f, 1.0f));
-                sc.Present(1, PresentFlags.None);
-                return;
-            }
+                    if (frame != null && w > 0 && h > 0 && stride > 0)
+                    {
+                        UploadFrameOnRenderThread(frame, w, h, stride);
+                    }
+                }
 
-            // Copy video to backbuffer (no scaling here; we’ll add quad/shader later)
-            ctx.OMSetRenderTargets(rtv);
-            ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
+                // Render
+                ctx.OMSetRenderTargets(rtv);
 
-            ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
+                //Resize viewport
+                ctx.RSSetViewport(new Viewport(
+                                            0,
+                                            0,
+                                            _bbW,
+                                            _bbH,
+                                            0.0f,
+                                            1.0f));
 
-            if (!_hasVideo || _videoSrv == null || _vs == null || _psCrt == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
-            {
-                sc.Present(1, PresentFlags.None);
-                return;
-            }
+                // Green fallback if no video yet
+                if (!_hasVideo || _videoTex == null)
+                {
+                    ctx.ClearRenderTargetView(rtv, new Color4(0.0f, 0.35f, 0.0f, 1.0f));
+                    sc.Present(1, PresentFlags.None);
+                    return;
+                }
 
-            // --- ALWAYS upload CRT params (real-time sliders depend on this) ---
-            if (_crtCBuffer != null)
-            {
+                // Copy video to backbuffer (no scaling here; we’ll add quad/shader later)
+                ctx.OMSetRenderTargets(rtv);
+                ctx.RSSetViewport(new Viewport(0, 0, _bbW, _bbH, 0.0f, 1.0f));
+
+                ctx.ClearRenderTargetView(rtv, new Color4(0, 0, 0, 1));
+
+                if (!_hasVideo || _videoSrv == null || _vs == null || _psCrt == null || _vertexBuffer == null || _inputLayout == null || _sampler == null)
+                {
+                    sc.Present(1, PresentFlags.None);
+                    return;
+                }
+
+                // --- ALWAYS upload CRT params (real-time sliders depend on this) ---
+                if (_crtCBuffer != null)
+                {
+                    _crt.ScreenWidth = _bbW;
+                    _crt.ScreenHeight = _bbH;
+                    _crt.EffectiveWidth = _bbW;
+                    _crt.EffectiveHeight = _bbH;
+
+                    var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                    try
+                    {
+                        Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                    }
+                    finally
+                    {
+                        ctx.Unmap(_crtCBuffer, 0);
+                    }
+                }
+                // Pipeline
+                ctx.IASetInputLayout(_inputLayout);
+                ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
+                ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
+
+                ctx.VSSetShader(_vs);
+                ctx.PSSetShader(_psCrt);
+                ctx.PSSetSampler(0, _sampler);
+                ctx.PSSetShaderResource(0, _videoSrv);
+                ctx.PSSetConstantBuffer(0, _crtCBuffer);
+                //CRT Pixel Shader setup
+                // Fill size terms from current backbuffer
                 _crt.ScreenWidth = _bbW;
                 _crt.ScreenHeight = _bbH;
+
+                // For now, geometry not ported: Effective = Screen
                 _crt.EffectiveWidth = _bbW;
                 _crt.EffectiveHeight = _bbH;
 
-                var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-                try
+                if (_crtCBuffer != null)
                 {
-                    Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                    var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                    try
+                    {
+                        System.Runtime.InteropServices.Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
+                    }
+                    finally
+                    {
+                        ctx.Unmap(_crtCBuffer, 0);
+                    }
+
+                    ctx.PSSetConstantBuffer(0, _crtCBuffer);
                 }
-                finally
-                {
-                    ctx.Unmap(_crtCBuffer, 0);
-                }
+
+
+                // Draw fullscreen quad
+                ctx.Draw(4, 0);
+
+                // Unbind SRV (avoids warnings if you ever render into same texture later)
+                ctx.PSSetShaderResource(0, null);
+
+                sc.Present(1, PresentFlags.None);
+
+
+                _lastPresentTicks = Stopwatch.GetTimestamp();
             }
-            // Pipeline
-            ctx.IASetInputLayout(_inputLayout);
-            ctx.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleStrip);
-            ctx.IASetVertexBuffer(0, _vertexBuffer, stride: sizeof(float) * 4, offset: 0);
-
-            ctx.VSSetShader(_vs);
-            ctx.PSSetShader(_psCrt);
-            ctx.PSSetSampler(0, _sampler);
-            ctx.PSSetShaderResource(0, _videoSrv);
-            ctx.PSSetConstantBuffer(0, _crtCBuffer);
-            //CRT Pixel Shader setup
-            // Fill size terms from current backbuffer
-            _crt.ScreenWidth = _bbW;
-            _crt.ScreenHeight = _bbH;
-
-            // For now, geometry not ported: Effective = Screen
-            _crt.EffectiveWidth = _bbW;
-            _crt.EffectiveHeight = _bbH;
-
-            if (_crtCBuffer != null)
-            {
-                var mapped = ctx.Map(_crtCBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-                try
-                {
-                    System.Runtime.InteropServices.Marshal.StructureToPtr(_crt, mapped.DataPointer, false);
-                }
-                finally
-                {
-                    ctx.Unmap(_crtCBuffer, 0);
-                }
-
-                ctx.PSSetConstantBuffer(0, _crtCBuffer);
-            }
-
-
-            // Draw fullscreen quad
-            ctx.Draw(4, 0);
-
-            // Unbind SRV (avoids warnings if you ever render into same texture later)
-            ctx.PSSetShaderResource(0, null);
-
-            sc.Present(1, PresentFlags.None);
-
-
-            _lastPresentTicks = Stopwatch.GetTimestamp();
         }
 
         private void UploadFrameOnRenderThread(byte[] bgra, int width, int height, int stride)
