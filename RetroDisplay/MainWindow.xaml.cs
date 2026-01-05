@@ -881,6 +881,8 @@ namespace RetroDisplay
         {
             SaveSettings();
             StopCapture();
+            _dx?.Dispose();         // signals render thread + waits
+            _dx = null;
             base.OnClosing(e);
         }
 

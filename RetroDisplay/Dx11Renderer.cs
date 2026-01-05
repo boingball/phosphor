@@ -642,6 +642,49 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
             _crt.VSize = vSize;
         }
 
+        private void CleanupD3D_OnRenderThread()
+        {
+            lock (_d3dLock)
+            {
+                // Don’t hang the app: keep this resilient.
+                try
+                {
+                    // Make sure nothing is still bound
+                    _context?.OMSetRenderTargets((ID3D11RenderTargetView?)null);
+                    _context?.PSSetShaderResource(0, null);
+                    _context?.ClearState();
+                    _context?.Flush();
+                }
+                catch { }
+
+                // Dispose views before resources
+                try { _videoSrv?.Dispose(); } catch { }
+                _videoSrv = null;
+
+                // Now textures
+                try { _stagingTex?.Dispose(); } catch { }
+                _stagingTex = null;
+
+                try { _videoTex?.Dispose(); } catch { }
+                _videoTex = null;
+
+                // Swapchain / RTV
+                try { _rtv?.Dispose(); } catch { }
+                _rtv = null;
+
+                try { _swapChain?.Dispose(); } catch { }
+                _swapChain = null;
+
+                // Context/device last
+                try { _context?.Dispose(); } catch { }
+                _context = null;
+
+                try { _device?.Dispose(); } catch { }
+                _device = null;
+            }
+        }
+
+
 
 
         public void Dispose()
