@@ -509,9 +509,6 @@ namespace RetroDisplay
                         _dxFrameBgra = new byte[bgraSize];
 
                     bgra = _dxFrameBgra;
-                    _dxW = width;
-                    _dxH = height;
-                    _dxStride = bgraStride;
                 }
 
                 // Expand BGR24 -> BGRA32 (B,G,R,255)
