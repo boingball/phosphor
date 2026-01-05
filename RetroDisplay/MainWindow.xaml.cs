@@ -41,6 +41,7 @@ namespace RetroDisplay
         private int _dxW, _dxH, _dxStride;
         private volatile int _dxFrameReady = 0; // 1 = there is a new frame to push
         private DispatcherTimer? _videoPump;
+        private Thread? _videoThread;
 
         // To this (add = null! to suppress CS8618, since they are initialized in InitCrtGeometry called from the constructor):
         private ScaleTransform scaleTransform = null!;
@@ -412,9 +413,10 @@ namespace RetroDisplay
                     StatusText.Text = $"FPS: {fps}";
                 });
             }
+
             // If UI hasn't consumed the last frame yet, drop this one.
-            if (Interlocked.Exchange(ref framePending, 1) == 1)
-            return;
+           //f (Interlocked.Exchange(ref framePending, 1) == 1)
+         // return;
 
         int width, height;
         byte[] pixels;
@@ -506,13 +508,16 @@ namespace RetroDisplay
                 int bgraStride = width * 4;
                 int bgraSize = bgraStride * height;
 
-                byte[] bgra;
+                byte[]? bgra = null;
                 lock (_sync)
                 {
                     if (_dxFrameBgra == null || _dxFrameBgra.Length != bgraSize)
                         _dxFrameBgra = new byte[bgraSize];
 
-                    bgra = _dxFrameBgra;
+                    bgra = _dxFrameBgra;   // ← now it's guaranteed non-null
+                    _dxW = width;
+                    _dxH = height;
+                    _dxStride = width * 4; // BGRA32
                 }
 
                 // Expand BGR24 -> BGRA32 (B,G,R,255)
@@ -761,30 +766,44 @@ namespace RetroDisplay
             };
 
             // Pump the latest captured frame into DX11 on the UI thread.
-            _videoPump = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-            _videoPump.Tick += (_, __) =>
+            _videoThread = new Thread(() =>
             {
-                if (_dx == null) return;
-                if (Interlocked.Exchange(ref _dxFrameReady, 0) == 0) return;
-
-                byte[]? frame;
-                int wFrame, hFrame, stride;
-
-                lock (_sync)
+                while (true)
                 {
-                    frame = _dxFrameBgra;
-                    wFrame = _dxW;
-                    hFrame = _dxH;
-                    stride = _dxStride;
+                    if (_dx == null)
+                    {
+                        Thread.Sleep(1);
+                        continue;
+                    }
+
+                    if (Interlocked.Exchange(ref _dxFrameReady, 0) == 1)
+                    {
+                        byte[]? frame;
+                        int w, h, stride;
+
+                        lock (_sync)
+                        {
+                            frame = _dxFrameBgra;
+                            w = _dxW;
+                            h = _dxH;
+                            stride = _dxStride;
+                        }
+
+                        if (frame != null && w > 0 && h > 0)
+                        {
+                            _dx.UpdateVideoFrameBgra32(frame, w, h, stride);
+                        }
+                    }
+
+                    Thread.Sleep(1); // tiny yield
                 }
-
-                if (frame == null || wFrame <= 0 || hFrame <= 0 || stride <= 0)
-                    return;
-
-                _dx.UpdateVideoFrameBgra32(frame, wFrame, hFrame, stride);
+            })
+            {
+                IsBackground = true,
+                Name = "DX Video Upload Thread"
             };
-            _videoPump.Start();
 
+            _videoThread.Start();
         }
 
 

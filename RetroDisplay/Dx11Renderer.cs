@@ -123,6 +123,7 @@ namespace RetroDisplay
             if (bgra == null || bgra.Length == 0) return;
             if (width <= 0 || height <= 0 || stride <= 0) return;
 
+
             lock (_d3dLock)
             {
                 // Create / resize the video texture as needed
@@ -144,9 +145,9 @@ namespace RetroDisplay
                             ArraySize = 1,
                             Format = Format.B8G8R8A8_UNorm,
                             SampleDescription = new SampleDescription(1, 0),
-                            Usage = ResourceUsage.Dynamic,
-                            BindFlags = BindFlags.None,              // we are blitting to backbuffer, no SRV needed
-                            CPUAccessFlags = CpuAccessFlags.Write,
+                            Usage = ResourceUsage.Default,        // 🔥 NOT Dynamic
+                            BindFlags = BindFlags.None,
+                            CPUAccessFlags = CpuAccessFlags.None, // 🔥 No Map()
                             MiscFlags = ResourceOptionFlags.None
                         };
 
@@ -154,33 +155,16 @@ namespace RetroDisplay
                     }
                 }
 
-                // Upload respecting RowPitch (DO NOT assume pitch == stride)
-                var mapped = _context.Map(_videoTex!, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+                // Upload the entire frame in one call (legal for DEFAULT usage)
+                _context.UpdateSubresource(
+                    bgra,
+                    _videoTex!,
+                    0,
+                    (uint)stride,
+                    0);
 
-                try
-                {
-                    unsafe
-                    {
-                        byte* dstBase = (byte*)mapped.DataPointer;
-                        int dstPitch = (int)mapped.RowPitch;
+                _hasVideo = true;
 
-                        fixed (byte* srcBase = bgra)
-                        {
-                            for (int y = 0; y < height; y++)
-                            {
-                                byte* srcRow = srcBase + (y * stride);
-                                byte* dstRow = dstBase + (y * dstPitch);
-                                Buffer.MemoryCopy(srcRow, dstRow, dstPitch, stride);
-                            }
-                        }
-                    }
-
-                    _hasVideo = true;
-                }
-                finally
-                {
-                    _context.Unmap(_videoTex!, 0);
-                }
             }
         }
 
@@ -219,6 +203,9 @@ namespace RetroDisplay
             if (_context == null || _swapChain == null || _rtv == null)
                 return;
 
+            if (_videoW > _width || _videoH > _height)
+                return;
+
             lock (_d3dLock)
             {
                 _context.OMSetRenderTargets(_rtv, null);
@@ -226,6 +213,13 @@ namespace RetroDisplay
                 if (_hasVideo && _videoTex != null)
                 {
                     using var backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+
+                    var bbDesc = backBuffer.Description;
+
+                    int copyW = Math.Min(_videoW, (int)bbDesc.Width);
+                    int copyH = Math.Min(_videoH, (int)bbDesc.Height);
+
+                    var box = new Box(0, 0, 0, copyW, copyH, 1);
 
                     // Copy the video texture into the backbuffer (top-left).
                     // (Scaling to fit comes later; first: prove pixels are arriving.)
