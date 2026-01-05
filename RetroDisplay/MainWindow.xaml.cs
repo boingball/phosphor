@@ -791,7 +791,7 @@ namespace RetroDisplay
 
                         if (frame != null && w > 0 && h > 0)
                         {
-                            _dx.UpdateVideoFrameBgra32(frame, w, h, stride);
+                            _dx.SubmitFrameBgra32(frame, w, h, stride);
                         }
                     }
 
